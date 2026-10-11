@@ -14,7 +14,10 @@
     "active_tasks": [
       "Sentinel Memory Bank Bootstrapped",
       "AGPLv3 & Golden Rule (Zero Placeholders) Codified",
-      "Public Repository Secret Isolation Hardened"
+      "Public Repository Secret Isolation Hardened",
+      "Single Binary Engine & Pure Go SQLite Handlers Implemented",
+      "Vue 3 Embedded SPA Dashboard Implemented & Built",
+      "Docker & Turnkey Linux Appliance Installer Ready"
     ]
   },
   "tracked_memory_areas": {

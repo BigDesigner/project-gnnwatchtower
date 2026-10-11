@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"netmon/internal/database"
-	"netmon/internal/incident"
-	"netmon/internal/models"
+	"gnnwatchtower/internal/database"
+	"gnnwatchtower/internal/incident"
+	"gnnwatchtower/internal/models"
 )
 
 // Poller manages continuous device & service checks
@@ -163,7 +163,7 @@ func (p *Poller) checkSingleDevice(dev models.Device) {
 		// Update ping time and last seen
 		_, _ = database.DB.Exec(`
 			UPDATE devices 
-			SET last_seen_at = NOW(), response_time_ms = $1, updated_at = NOW() 
+			SET last_seen_at = CURRENT_TIMESTAMP, response_time_ms = $1, updated_at = CURRENT_TIMESTAMP 
 			WHERE id = $2
 		`, responseTime, dev.ID)
 	}
@@ -185,14 +185,14 @@ func (p *Poller) handleStatusTransition(dev models.Device, newStatus string, res
 		// Device went down -> Record incident
 		_, _ = tx.Exec(`
 			UPDATE devices 
-			SET status = 'offline', last_status_change_at = NOW(), updated_at = NOW() 
+			SET status = 'offline', last_status_change_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
 			WHERE id = $1
 		`, dev.ID)
 
 		var incidentID int
 		err := tx.QueryRow(`
 			INSERT INTO downtime_incidents (device_id, started_at, classified_cause, auto_detection_hypothesis)
-			VALUES ($1, NOW(), 'unclassified', 'Lost network response')
+			VALUES ($1, CURRENT_TIMESTAMP, 'unclassified', 'Lost network response')
 			RETURNING id
 		`, dev.ID).Scan(&incidentID)
 
@@ -206,7 +206,7 @@ func (p *Poller) handleStatusTransition(dev models.Device, newStatus string, res
 		// Device recovered -> Close active incident
 		_, _ = tx.Exec(`
 			UPDATE devices 
-			SET status = 'online', last_seen_at = NOW(), last_status_change_at = NOW(), response_time_ms = $1, updated_at = NOW() 
+			SET status = 'online', last_seen_at = CURRENT_TIMESTAMP, last_status_change_at = CURRENT_TIMESTAMP, response_time_ms = $1, updated_at = CURRENT_TIMESTAMP 
 			WHERE id = $2
 		`, respTime, dev.ID)
 
@@ -223,7 +223,7 @@ func (p *Poller) handleStatusTransition(dev models.Device, newStatus string, res
 			duration := int(time.Since(startedAt).Seconds())
 			_, _ = tx.Exec(`
 				UPDATE downtime_incidents 
-				SET resolved_at = NOW(), duration_seconds = $1 
+				SET resolved_at = CURRENT_TIMESTAMP, duration_seconds = $1 
 				WHERE id = $2
 			`, duration, incID)
 		}
@@ -289,7 +289,7 @@ func checkSingleService(s models.ServiceMonitored, ip string) {
 
 	_, _ = database.DB.Exec(`
 		UPDATE services_monitored 
-		SET status = $1, response_time_ms = $2, last_check_at = NOW() 
+		SET status = $1, response_time_ms = $2, last_check_at = CURRENT_TIMESTAMP 
 		WHERE id = $3
 	`, serviceStatus, respTime, s.ID)
 }

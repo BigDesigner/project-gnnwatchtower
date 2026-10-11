@@ -38,8 +38,10 @@ gnnwatchtower
 
 # Frontend Bağımlılıkları ve Derleme Çıktıları
 node_modules/
-dist/
+frontend/dist/
 .vite/
+!backend/cmd/server/dist/
+!backend/cmd/server/dist/**
 
 # Test, Geçici Dosyalar ve Günlük Kayıtları (Loglar)
 *.log

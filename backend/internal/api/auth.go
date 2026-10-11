@@ -17,6 +17,23 @@ var (
 	sessionsMu     sync.RWMutex
 )
 
+func init() {
+	// Periodic cleanup of expired sessions every hour
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		for range ticker.C {
+			sessionsMu.Lock()
+			now := time.Now()
+			for token, sess := range activeSessions {
+				if now.After(sess.ExpiresAt) {
+					delete(activeSessions, token)
+				}
+			}
+			sessionsMu.Unlock()
+		}
+	}()
+}
+
 type sessionInfo struct {
 	Username  string
 	Role      string

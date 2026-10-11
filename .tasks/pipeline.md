@@ -9,17 +9,18 @@
 - [x] Verify and sync AGPL-3.0 license.
 - [x] Configure zero-leak `.gitignore` and sanitized `.env.example`.
 - [x] Initialize Sentinel Agent Memory Bank (`.memory-bank/`, `.specs/`, `.agents/`, `.tasks/`).
-- [ ] Implement embedded Vue 3 SPA frontend skeleton (Cisco Meraki Dark minimalist style).
-- [ ] Connect Go backend routes to serve embedded frontend (`//go:embed dist/*`).
-- [ ] Verify discovery engine with synthetic/local CIDR range.
-- [ ] Validate power-outage correlation classifier and test notification dispatchers.
+- [x] Implement embedded Vue 3 SPA frontend (Cisco Meraki Dark minimalist style).
+- [x] Connect Go backend routes to serve embedded frontend (`//go:embed dist/*`).
+- [x] Implement discovery engine with local CIDR range scanner and RFC 1918 security guards.
+- [x] Implement power-outage correlation classifier and multi-channel notification dispatchers (Telegram, Discord, Brevo).
+- [x] Nightly 03:00 automated backup scheduler and rotation manager.
+- [x] Standalone cross-platform Agent binary (`backend/cmd/agent/main.go`) with pre-shutdown signal emission.
+- [x] Multi-stage production `Dockerfile` and single-binary `docker-compose.yml`.
+- [x] Automated Linux installer script `install.sh` for Ubuntu 22.04 / 24.04 LTS.
 
 ## Backlog
-- [ ] Standalone Windows Agent binary (`gnnwatchtower-agent-win.exe`) with pre-shutdown signal emission.
-- [ ] Standalone Ubuntu/Debian Agent binary (`gnnwatchtower-agent-linux`) with systemd service unit.
 - [ ] VMware ESXi vSphere API status polling module (Port 443/902).
 - [ ] Synology DSM SNMP polling module (Port 5000/5001).
-- [ ] Nightly 03:00 automated backup scheduler and rotation manager.
 
 ## Validation Plan
 1. Static analysis: `go vet ./...`

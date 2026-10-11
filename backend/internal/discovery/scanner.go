@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"netmon/internal/database"
-	"netmon/internal/models"
+	"gnnwatchtower/internal/database"
+	"gnnwatchtower/internal/models"
 )
 
 var commonPorts = []int{22, 80, 443, 902, 3389, 5000, 5001, 8080}

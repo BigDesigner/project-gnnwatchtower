@@ -1,77 +1,47 @@
+# ==============================================================================
+# GNNwatchtower - Single Binary Docker Compose Topology
+# Port: 3800 | Architecture: Pure Go SQLite WAL (Single Container Appliance)
+# License: GNU Affero General Public License v3 (AGPL-3.0)
+# ==============================================================================
+
 version: '3.8'
 
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: netmon-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-netmon_admin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-netmon_secure_password_2026}
-      POSTGRES_DB: ${POSTGRES_DB:-netmon_db}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./backend/migrations:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-netmon_admin} -d ${POSTGRES_DB:-netmon_db}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - netmon-internal
-
-  backend:
+  watchtower:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
-    container_name: netmon-backend
+    container_name: gnnwatchtower
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     cap_add:
       - NET_RAW
       - NET_ADMIN
     environment:
-      PORT: ${BACKEND_PORT:-8080}
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_USER: ${POSTGRES_USER:-netmon_admin}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-netmon_secure_password_2026}
-      DB_NAME: ${POSTGRES_DB:-netmon_db}
-      JWT_SECRET: ${JWT_SECRET:-super_secret_jwt_key_netmon_system_change_me}
-      DEFAULT_SUBNET: ${SCAN_SUBNET:-192.168.1.0/24}
-      BACKUP_DIR: /app/backups
+      SERVER_PORT: 3800
+      GIN_MODE: release
+      JWT_SECRET: ${JWT_SECRET:-gnnwatchtower_secure_jwt_token_2026}
+      DEFAULT_SCAN_SUBNET: ${DEFAULT_SCAN_SUBNET:-192.168.1.0/24}
+      DEFAULT_CHECK_INTERVAL: ${DEFAULT_CHECK_INTERVAL:-15}
     volumes:
-      - backup_data:/app/backups
+      - watchtower_data:/opt/gnnwatchtower/data
+      - watchtower_backups:/opt/gnnwatchtower/backups
     ports:
-      - "${BACKEND_PORT:-8080}:8080"
+      - "3800:3800"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3800/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     networks:
-      - netmon-internal
-      - netmon-network
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: netmon-frontend
-    restart: unless-stopped
-    depends_on:
-      - backend
-    ports:
-      - "${FRONTEND_PORT:-3000}:80"
-    networks:
-      - netmon-internal
-      - netmon-network
+      - watchtower-net
 
 volumes:
-  postgres_data:
-    name: netmon_postgres_data
-  backup_data:
-    name: netmon_backup_data
+  watchtower_data:
+    name: gnnwatchtower_data
+  watchtower_backups:
+    name: gnnwatchtower_backups
 
 networks:
-  netmon-internal:
-    internal: true
-  netmon-network:
+  watchtower-net:
     driver: bridge

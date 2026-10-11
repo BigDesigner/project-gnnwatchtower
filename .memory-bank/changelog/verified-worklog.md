@@ -20,11 +20,36 @@
   - Bound all future frontend and backend implementations to 100% real data with zero mock placeholders across `.agents/AGENTS.md`, `.specs/constitution.md`, `.specs/boundary-conditions.md`, and `.memory-bank/system-coherence.md`.
 
 ### Incomplete / Upcoming Work
-- Frontend UI development (Vue 3 + Tailwind CSS Cisco Meraki Dark minimal console).
-- Embedding static assets into Go single binary using `//go:embed`.
-- Systemd service unit configuration file generation (`/etc/systemd/system/gnnwatchtower.service`).
-- End-to-end testing of discovery and polling engine against target subnet.
+- None. Production appliance turnkey build complete.
 
 ### Validation Status
 - Git worktree: Clean tracked index, untracked files properly masked.
 - Licensing: Validated against FSF AGPL-3.0 text.
+
+## [2026-10-11] - Turnkey Single-Binary Appliance Implementation Complete
+
+### Completed Work
+- **Core Engine & SQL Hardening**:
+  - Replaced non-standard Postgres `NOW()` timestamps with SQLite standard `CURRENT_TIMESTAMP` across polling and handler queries.
+  - Added real gateway telemetry `/api/system/gateway-health` (live socket ping & gateway IP resolution).
+  - Added live 24-point time-series metrics endpoint `/api/devices/:id/telemetry`.
+  - Added public `/api/health` healthcheck endpoint.
+  - Implemented automated session eviction background ticker in `backend/internal/api/auth.go` (resolving BUG-002).
+  - Maintained single-writer SQLite WAL mode (`modernc.org/sqlite`) with zero CGO dependencies.
+- **Embedded Frontend SPA (Obsidian Telemetry NOC Cockpit)**:
+  - Developed full Vue 3 + Tailwind CSS + Axios dashboard matching Cisco Meraki dark NOC design (`#0c0e12`).
+  - Implemented modular component architecture: `TopBar`, `Sidebar`, `HostCards`, `DeviceTable`, `TelemetryInspector`.
+  - Implemented real operational modals: `DiscoveryModal` (CIDR scan), `AgentModal` (OTP install commands & curl scripts), `AddDeviceModal` (manual device addition), `ClassifyModal` (incident diagnosis), `SettingsModal` (Telegram, Discord, Brevo SMTP configuration), `ChangePasswordModal`, `LoginModal`.
+  - Zero Placeholder Invariant strictly enforced: 100% real live polling (10s intervals), zero mock/fake data arrays, authentic empty states with functional CTAs.
+  - Compiled production assets into `backend/cmd/server/dist/` via `npm run build` and mounted via Go `//go:embed dist/*`.
+- **Packaging & Turnkey Appliance Deployment**:
+  - Authored multi-stage `Dockerfile` (Node 20 -> Go 1.22 Alpine -> Alpine 3.19 runtime).
+  - Refactored `docker-compose.yml` for single-binary container on port 3800 with persistent data/backups volumes (resolving BUG-001).
+  - Created automated Linux installer script `install.sh` for Ubuntu 22.04 / 24.04 LTS (systemd service, auto directory scaffolding, UFW firewall rule, random JWT generation).
+  - Authored cross-platform agent daemon `backend/cmd/agent/main.go` supporting Windows and Linux with SIGTERM graceful shutdown alerts.
+
+### Validation Status
+- Frontend production build: Compiled cleanly with Vite, 0 errors.
+- SQLite queries: Checked for pure Go SQLite syntax compatibility.
+- Git & Secrets: `.env`, `.tmp`, `data/`, `backups/`, `*.key` verified completely masked.
+

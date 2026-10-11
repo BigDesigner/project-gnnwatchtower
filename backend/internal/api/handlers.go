@@ -7,16 +7,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"netmon/internal/backup"
-	"netmon/internal/database"
-	"netmon/internal/discovery"
-	"netmon/internal/models"
+	"gnnwatchtower/internal/backup"
+	"gnnwatchtower/internal/database"
+	"gnnwatchtower/internal/discovery"
+	"gnnwatchtower/internal/models"
 )
 
 // GetDashboardStats returns high-level system summary
@@ -30,18 +33,18 @@ func GetDashboardStats(c *gin.Context) {
 	_ = database.DB.QueryRow(`
 		SELECT 
 			COUNT(*),
-			COUNT(*) FILTER (WHERE status = 'online'),
-			COUNT(*) FILTER (WHERE status = 'offline'),
-			COUNT(*) FILTER (WHERE status = 'warning')
+			COALESCE(SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'offline' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'warning' THEN 1 ELSE 0 END), 0)
 		FROM devices
 	`).Scan(&totalDevices, &onlineDevices, &offlineDevices, &warningDevices)
 
 	var activeProfiles, dormantProfiles, maintenanceProfiles int
 	_ = database.DB.QueryRow(`
 		SELECT 
-			COUNT(*) FILTER (WHERE monitoring_profile = 'active'),
-			COUNT(*) FILTER (WHERE monitoring_profile IN ('dormant_24h', 'dormant_30d')),
-			COUNT(*) FILTER (WHERE monitoring_profile = 'maintenance')
+			COALESCE(SUM(CASE WHEN monitoring_profile = 'active' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN monitoring_profile IN ('dormant_24h', 'dormant_30d') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN monitoring_profile = 'maintenance' THEN 1 ELSE 0 END), 0)
 		FROM devices
 	`).Scan(&activeProfiles, &dormantProfiles, &maintenanceProfiles)
 
@@ -49,6 +52,20 @@ func GetDashboardStats(c *gin.Context) {
 	_ = database.DB.QueryRow(`
 		SELECT COUNT(*) FROM downtime_incidents WHERE classified_cause = 'unclassified'
 	`).Scan(&unclassifiedIncidents)
+
+	// Fetch real average temperature from recent system metrics (last 2 hours)
+	var avgTemp sql.NullFloat64
+	_ = database.DB.QueryRow(`
+		SELECT AVG(temperature_celsius)
+		FROM system_metrics
+		WHERE recorded_at >= datetime('now', '-2 hours') AND temperature_celsius > 0
+	`).Scan(&avgTemp)
+
+	var avgTemperature *float64
+	if avgTemp.Valid {
+		v := math.Round(avgTemp.Float64*10) / 10
+		avgTemperature = &v
+	}
 
 	// Fetch client branding
 	var clientCompany, clientLocation string
@@ -61,24 +78,29 @@ func GetDashboardStats(c *gin.Context) {
 		clientLocation = "Sistem Odası"
 	}
 
-	// Calculate overall average uptime in past 24h (simple ratio)
+	// Calculate overall average uptime in past 24h
 	uptimePct := 100.0
 	if totalDevices > 0 {
 		uptimePct = float64(onlineDevices) / float64(totalDevices) * 100.0
 	}
 
+	// Probe gateway status
+	gateway := checkGatewayHealth()
+
 	c.JSON(http.StatusOK, gin.H{
-		"client_company_name":   clientCompany,
-		"client_location":       clientLocation,
-		"total_devices":         totalDevices,
-		"online_devices":        onlineDevices,
-		"offline_devices":       offlineDevices,
-		"warning_devices":       warningDevices,
-		"active_profiles":       activeProfiles,
-		"dormant_profiles":      dormantProfiles,
-		"maintenance_profiles":  maintenanceProfiles,
-		"unclassified_incidents": unclassifiedIncidents,
-		"uptime_percentage":     fmt.Sprintf("%.1f", uptimePct),
+		"client_company_name":    clientCompany,
+		"client_location":        clientLocation,
+		"total_devices":          totalDevices,
+		"online_devices":         onlineDevices,
+		"offline_devices":        offlineDevices,
+		"warning_devices":        warningDevices,
+		"active_profiles":        activeProfiles,
+		"dormant_profiles":       dormantProfiles,
+		"maintenance_profiles":   maintenanceProfiles,
+		"unclassified_incidents":  unclassifiedIncidents,
+		"uptime_percentage":      fmt.Sprintf("%.1f", uptimePct),
+		"avg_temperature":        avgTemperature,
+		"gateway":                gateway,
 	})
 }
 
@@ -233,7 +255,7 @@ func UpdateDevice(c *gin.Context) {
 		    operator_notes = $6,
 		    monitoring_profile = COALESCE(NULLIF($7, ''), monitoring_profile),
 		    check_interval_seconds = CASE WHEN $8 > 0 THEN $8 ELSE check_interval_seconds END,
-		    updated_at = NOW()
+		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $9
 	`, input.Name, input.DeviceType, input.OSVersion, input.Purpose, input.Location,
 		input.OperatorNotes, input.MonitoringProfile, input.CheckIntervalSeconds, id)
@@ -460,7 +482,7 @@ func ExportBackup(c *gin.Context) {
 		return
 	}
 
-	filename := fmt.Sprintf("netmon-backup-%s.json", time.Now().Format("2006-01-02-150405"))
+	filename := fmt.Sprintf("gnnwatchtower-backup-%s.json", time.Now().Format("2006-01-02-150405"))
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	c.Header("Content-Type", "application/json")
 	c.JSON(http.StatusOK, bundle)
@@ -533,8 +555,8 @@ func UpdateSettings(c *gin.Context) {
 	for k, v := range input {
 		_, _ = database.DB.Exec(`
 			INSERT INTO system_settings (key, value, updated_at)
-			VALUES ($1, $2, NOW())
-			ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+			VALUES ($1, $2, CURRENT_TIMESTAMP)
+			ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
 		`, k, v)
 	}
 
@@ -569,14 +591,14 @@ func AgentHeartbeat(c *gin.Context) {
 
 		_, _ = database.DB.Exec(`
 			UPDATE devices 
-			SET status = 'offline', last_status_change_at = NOW() 
+			SET status = 'offline', last_status_change_at = CURRENT_TIMESTAMP 
 			WHERE id = $1
 		`, devID)
 
 		// Record planned maintenance incident directly!
 		_, _ = database.DB.Exec(`
 			INSERT INTO downtime_incidents (device_id, started_at, classified_cause, auto_detection_hypothesis, operator_notes)
-			VALUES ($1, NOW(), 'planned_maintenance', 'Ajan Kapanma Bildirimi: ' || $2, 'Ajan tarafından temiz kapanma doğrulandı')
+			VALUES ($1, CURRENT_TIMESTAMP, 'planned_maintenance', 'Ajan Kapanma Bildirimi: ' || $2, 'Ajan tarafından temiz kapanma doğrulandı')
 		`, devID, reason)
 
 		c.JSON(http.StatusOK, gin.H{"status": "ack_shutdown"})
@@ -587,17 +609,17 @@ func AgentHeartbeat(c *gin.Context) {
 	_, _ = database.DB.Exec(`
 		UPDATE devices 
 		SET status = 'online',
-		    is_agent_installed = true,
+		    is_agent_installed = 1,
 		    os_version = COALESCE(NULLIF($1, ''), os_version),
-		    last_seen_at = NOW(),
-		    updated_at = NOW()
+		    last_seen_at = CURRENT_TIMESTAMP,
+		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $2
 	`, report.OSName+" "+report.OSVersion, devID)
 
 	// Save telemetry metrics
 	_, _ = database.DB.Exec(`
 		INSERT INTO system_metrics (device_id, cpu_usage_pct, ram_usage_pct, disk_usage_pct, recorded_at)
-		VALUES ($1, $2, $3, $4, NOW())
+		VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
 	`, devID, report.CPUUsagePct, report.RAMUsagePct, report.DiskUsagePct)
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -749,7 +771,112 @@ func DownloadAgentBinary(c *gin.Context) {
 		filename = "gnnwatchtower-agent"
 	}
 
+	paths := []string{
+		"./bin/" + filename,
+		"/opt/gnnwatchtower/bin/" + filename,
+		filename,
+	}
+
+	var foundPath string
+	for _, p := range paths {
+		if f, err := os.Stat(p); err == nil && !f.IsDir() {
+			foundPath = p
+			break
+		}
+	}
+
+	if foundPath == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Ajan ikili dosyası henüz oluşturulmadı. Lütfen 'go build ./cmd/agent' çalıştırınız."})
+		return
+	}
+
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
-	c.File("./bin/" + filename)
+	c.File(foundPath)
 }
+
+// checkGatewayHealth tests default gateway latency
+func checkGatewayHealth() gin.H {
+	var gwIP string
+	if database.DB != nil {
+		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'default_gateway'").Scan(&gwIP)
+	}
+	if gwIP == "" {
+		gwIP = "192.168.1.1"
+	}
+
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(gwIP, "53"), 350*time.Millisecond)
+	if err != nil {
+		// Try port 80 if 53 is not listening
+		conn, err = net.DialTimeout("tcp", net.JoinHostPort(gwIP, "80"), 350*time.Millisecond)
+	}
+
+	status := "offline"
+	latencyMs := 0.0
+	if err == nil {
+		_ = conn.Close()
+		status = "online"
+		latencyMs = float64(time.Since(start).Microseconds()) / 1000.0
+	}
+
+	return gin.H{
+		"ip":         gwIP,
+		"status":     status,
+		"latency_ms": fmt.Sprintf("%.1f", latencyMs),
+	}
+}
+
+// GetGatewayHealth returns live gateway status
+func GetGatewayHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, checkGatewayHealth())
+}
+
+// GetDeviceTelemetry returns real time-series metrics for a device
+func GetDeviceTelemetry(c *gin.Context) {
+	if database.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database not ready"})
+		return
+	}
+
+	idStr := c.Param("id")
+	devID, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz cihaz ID"})
+		return
+	}
+
+	rows, err := database.DB.Query(`
+		SELECT cpu_usage_pct, ram_usage_pct, disk_usage_pct, temperature_celsius, recorded_at
+		FROM system_metrics
+		WHERE device_id = $1
+		ORDER BY recorded_at DESC
+		LIMIT 24
+	`, devID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var points []gin.H
+	for rows.Next() {
+		var cpu, ram, disk, temp sql.NullFloat64
+		var recordedAt time.Time
+		if err := rows.Scan(&cpu, &ram, &disk, &temp, &recordedAt); err == nil {
+			points = append(points, gin.H{
+				"cpu":         cpu.Float64,
+				"ram":         ram.Float64,
+				"disk":        disk.Float64,
+				"temp":        temp.Float64,
+				"recorded_at": recordedAt.Format("15:04:05"),
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"device_id": devID,
+		"metrics":   points,
+	})
+}
+
 

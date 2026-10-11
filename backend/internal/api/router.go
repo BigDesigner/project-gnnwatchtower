@@ -24,7 +24,14 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 
 	api := r.Group("/api")
 	{
-		// Public Auth & Agent Endpoints
+		// Public Health, Auth & Agent Endpoints
+		api.GET("/health", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{
+				"status":  "healthy",
+				"service": "gnnwatchtower",
+				"port":    3800,
+			})
+		})
 		api.POST("/auth/login", Login)
 		api.POST("/agent/report", AgentHeartbeat)
 		api.GET("/agent/install/linux", GenerateLinuxAgentScript)
@@ -43,6 +50,10 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 			protected.POST("/devices", CreateDevice)
 			protected.PUT("/devices/:id", UpdateDevice)
 			protected.DELETE("/devices/:id", DeleteDevice)
+			protected.GET("/devices/:id/telemetry", GetDeviceTelemetry)
+
+			// Gateway & Telemetry
+			protected.GET("/system/gateway-health", GetGatewayHealth)
 
 			// Device Services
 			protected.POST("/devices/:id/services", AddServiceToDevice)
