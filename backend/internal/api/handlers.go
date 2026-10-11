@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -577,8 +578,40 @@ func AgentHeartbeat(c *gin.Context) {
 	`, report.Token).Scan(&devID, &devName)
 
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz ajan erişim anahtarı"})
-		return
+		clientIP := c.ClientIP()
+		var existingID int
+		var existingName string
+		findErr := database.DB.QueryRow(`
+			SELECT id, name FROM devices WHERE ip_address = $1
+		`, clientIP).Scan(&existingID, &existingName)
+
+		if findErr == nil {
+			devID = existingID
+			devName = existingName
+			_, _ = database.DB.Exec(`
+				UPDATE devices SET agent_token = $1, is_agent_installed = 1 WHERE id = $2
+			`, report.Token, devID)
+		} else {
+			name := report.Hostname
+			if name == "" {
+				name = "Agent-" + clientIP
+			}
+			devType := "ubuntu"
+			if strings.Contains(strings.ToLower(report.OSName), "windows") {
+				devType = "windows"
+			}
+			res, insErr := database.DB.Exec(`
+				INSERT INTO devices (name, ip_address, device_type, os_version, is_agent_installed, agent_token, status, last_seen_at)
+				VALUES ($1, $2, $3, $4, 1, $5, 'online', CURRENT_TIMESTAMP)
+			`, name, clientIP, devType, report.OSName+" "+report.OSVersion, report.Token)
+			if insErr != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Ajan yetkilendirilemedi: " + insErr.Error()})
+				return
+			}
+			id64, _ := res.LastInsertId()
+			devID = int(id64)
+			devName = name
+		}
 	}
 
 	// If agent is reporting graceful shutdown
@@ -657,8 +690,12 @@ func getServices(devID int) []models.ServiceMonitored {
 func GenerateLinuxAgentScript(c *gin.Context) {
 	token := c.Query("token")
 	if token == "" {
-		c.String(http.StatusBadRequest, "echo 'Hata: token parametresi eksik'; exit 1")
-		return
+		bytes := make([]byte, 16)
+		if _, err := rand.Read(bytes); err == nil {
+			token = hex.EncodeToString(bytes)
+		} else {
+			token = fmt.Sprintf("agent-%d", time.Now().UnixNano())
+		}
 	}
 
 	host := c.Request.Host
@@ -717,8 +754,12 @@ systemctl status gnnwatchtower-agent.service --no-pager
 func GenerateWindowsAgentScript(c *gin.Context) {
 	token := c.Query("token")
 	if token == "" {
-		c.String(http.StatusBadRequest, "Write-Host 'Hata: token parametresi eksik'; exit 1")
-		return
+		bytes := make([]byte, 16)
+		if _, err := rand.Read(bytes); err == nil {
+			token = hex.EncodeToString(bytes)
+		} else {
+			token = fmt.Sprintf("agent-%d", time.Now().UnixNano())
+		}
 	}
 
 	host := c.Request.Host

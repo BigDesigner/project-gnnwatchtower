@@ -49,6 +49,10 @@ elif [ -f "./gnnwatchtower" ]; then
 elif [ -d "./backend" ] && command -v go >/dev/null 2>&1; then
     echo -e "${CYAN}Yerel kaynak koddan derleme baslatiliyor (Go CGO_ENABLED=0)...${NC}"
     (cd backend && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
+    mkdir -p "$INSTALL_DIR/bin"
+    (cd backend && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$INSTALL_DIR/bin/gnnwatchtower-agent" ./cmd/agent)
+    (cd backend && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "$INSTALL_DIR/bin/gnnwatchtower-agent.exe" ./cmd/agent)
+    chmod +x "$INSTALL_DIR/bin/gnnwatchtower-agent"
 else
     echo -e "${CYAN}GitHub uzerinden bagimsiz tek satir kurulum modu algilandi...${NC}"
     
@@ -73,6 +77,12 @@ else
     
     echo -e "${CYAN}Gömülü Web UI ile birlikte tek ikili dosya derleniyor...${NC}"
     (cd "$BUILD_DIR/backend" && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
+    
+    echo -e "${CYAN}Mini-Ajan ikili dosyalari derleniyor (Linux & Windows)...${NC}"
+    mkdir -p "$INSTALL_DIR/bin"
+    (cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$INSTALL_DIR/bin/gnnwatchtower-agent" ./cmd/agent)
+    (cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "$INSTALL_DIR/bin/gnnwatchtower-agent.exe" ./cmd/agent)
+    chmod +x "$INSTALL_DIR/bin/gnnwatchtower-agent"
     
     rm -rf "$BUILD_DIR"
 fi

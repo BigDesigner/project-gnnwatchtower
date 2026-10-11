@@ -51,10 +51,9 @@ func ScanSubnet(cidr string) ([]models.DiscoveryHost, error) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			ipStr := tip.String()
-			openPorts := probePorts(ipStr, commonPorts, 600*time.Millisecond)
+			openPorts := probePorts(ipStr, commonPorts, 250*time.Millisecond)
 
-			if len(openPorts) > 0 || pingHost(ipStr, 400*time.Millisecond) {
+			if len(openPorts) > 0 || pingHost(ipStr, 200*time.Millisecond) {
 				host := models.DiscoveryHost{
 					IPAddress:           ipStr,
 					OpenPorts:           openPorts,
@@ -62,8 +61,11 @@ func ScanSubnet(cidr string) ([]models.DiscoveryHost, error) {
 					AlreadyMonitored:    existingIPs[ipStr],
 				}
 
-				// Try reverse DNS lookup for hostname
-				if names, err := net.LookupAddr(ipStr); err == nil && len(names) > 0 {
+				// Fast reverse DNS lookup with 200ms timeout context
+				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				names, err := net.DefaultResolver.LookupAddr(ctx, ipStr)
+				cancel()
+				if err == nil && len(names) > 0 {
 					host.Hostname = names[0]
 				}
 
@@ -80,27 +82,33 @@ func ScanSubnet(cidr string) ([]models.DiscoveryHost, error) {
 
 func probePorts(ip string, ports []int, timeout time.Duration) []int {
 	var open []int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for _, port := range ports {
-		addr := fmt.Sprintf("%s:%d", ip, port)
-		conn, err := net.DialTimeout("tcp", addr, timeout)
-		if err == nil {
-			_ = conn.Close()
-			open = append(open, port)
-		}
+		wg.Add(1)
+		go func(p int) {
+			defer wg.Done()
+			addr := fmt.Sprintf("%s:%d", ip, p)
+			conn, err := net.DialTimeout("tcp", addr, timeout)
+			if err == nil {
+				_ = conn.Close()
+				mu.Lock()
+				open = append(open, p)
+				mu.Unlock()
+			}
+		}(port)
 	}
+	wg.Wait()
 	return open
 }
 
 func pingHost(ip string, timeout time.Duration) bool {
-	// TCP fast probe on port 80/443/22 as quick check
-	d := net.Dialer{Timeout: timeout}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	conn, err := d.DialContext(ctx, "ip4:icmp", ip)
-	if err == nil {
-		_ = conn.Close()
-		return true
+	for _, p := range []int{80, 443, 22} {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, p), timeout)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
 	}
 	return false
 }

@@ -93,7 +93,7 @@ export default {
 
   // Discovery
   async scanSubnet(cidr) {
-    const res = await client.post('/discovery/scan', { subnet: cidr })
+    const res = await client.post('/discovery/scan', { subnet: cidr }, { timeout: 60000 })
     return res.data
   },
 
