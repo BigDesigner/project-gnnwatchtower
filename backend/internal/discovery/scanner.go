@@ -51,6 +51,7 @@ func ScanSubnet(cidr string) ([]models.DiscoveryHost, error) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
+			ipStr := tip.String()
 			openPorts := probePorts(ipStr, commonPorts, 250*time.Millisecond)
 
 			if len(openPorts) > 0 || pingHost(ipStr, 200*time.Millisecond) {
