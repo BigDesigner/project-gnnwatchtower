@@ -110,5 +110,7 @@
   - In `GenerateWindowsAgentScript`: added upfront Administrator privilege verification (`IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)`).
   - In `AgentHeartbeat`: ensured resilient `devID` fallback query and `targetIP` sanitization (stripping loopback).
   - In `backend/cmd/agent/main.go`: improved local IP detection by probing the server route directly via UDP socket.
+- **Go Compilation Cleanup**:
+  - Removed unused `"net"` package import from `backend/internal/api/handlers.go` ensuring zero compiler errors during `go build ./cmd/server`.
 
 
