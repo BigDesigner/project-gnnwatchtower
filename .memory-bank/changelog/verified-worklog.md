@@ -55,3 +55,24 @@
 - SQLite queries: Checked for pure Go SQLite syntax compatibility.
 - Git & Secrets: `.env`, `.tmp`, `data/`, `backups/`, `*.key` verified completely masked.
 
+## [2026-10-11] - Hardening: Settings Unmarshal Fix, HTTP Clipboard Fallback, and Safe In-Place Updater
+
+### Completed Work
+- **Settings Unmarshal Bug Fix (`json: cannot unmarshal object into Go value of type string`)**:
+  - Refactored `backend/internal/api/handlers.go` `GetSettings` to return a direct key-value map (`map[string]string`).
+  - Hardened `UpdateSettings` to accept `map[string]interface{}` and coerce primitives gracefully while safely ignoring numeric keys and malformed nested objects.
+  - Sanitized `SettingsModal.vue` payload extraction so only valid string keys are dispatched.
+- **HTTP IP Clipboard Fallback**:
+  - Resolved clipboard copy failure on plain HTTP IP endpoints (`AgentModal.vue`) by adding a universal `document.execCommand('copy')` textarea fallback.
+- **Safe In-Place Updater (`update.sh`)**:
+  - Authored `update.sh` to update appliances in-place without touching `data/gnnwatchtower.db` or `.env`.
+  - Added automated pre-update timestamped SQLite backups (`backups/pre-update-*.db`).
+  - Added temporary service stop to prevent Linux `text file busy` errors during binary installation.
+- **Hardened `install.sh`**:
+  - Added automated pre-install SQLite backup if existing database exists.
+  - Added local test DB migration support from current working directory to `/opt/gnnwatchtower/data/`.
+  - Changed binary deployment to atomic `install -m 755`.
+- **Frontend Production Build**:
+  - Recompiled Vue 3 SPA via `npm run build` directly to `backend/cmd/server/dist/`.
+
+

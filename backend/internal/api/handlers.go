@@ -521,46 +521,66 @@ func ImportBackup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Tüm cihazlar, ayarlar ve loglar başarıyla geri yüklendi."})
 }
 
-// GetSettings lists system configuration keys
+// GetSettings lists system configuration keys as a direct key-value map
 func GetSettings(c *gin.Context) {
-	rows, err := database.DB.Query("SELECT key, value, description, updated_at FROM system_settings")
+	rows, err := database.DB.Query("SELECT key, value FROM system_settings")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	defer rows.Close()
 
-	var settings []models.SystemSetting
+	settingsMap := make(map[string]string)
 	for rows.Next() {
-		var s models.SystemSetting
-		var desc sql.NullString
-		if err := rows.Scan(&s.Key, &s.Value, &desc, &s.UpdatedAt); err == nil {
-			if desc.Valid {
-				s.Description = desc.String
-			}
-			settings = append(settings, s)
+		var k, v string
+		if err := rows.Scan(&k, &v); err == nil {
+			settingsMap[k] = v
 		}
 	}
-	c.JSON(http.StatusOK, settings)
+	c.JSON(http.StatusOK, settingsMap)
 }
 
-// UpdateSettings updates key-value configurations
+// UpdateSettings updates key-value configurations with bulletproof type coercion
 func UpdateSettings(c *gin.Context) {
-	var input map[string]string
+	var input map[string]interface{}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	for k, v := range input {
+	for k, rawVal := range input {
+		// Ignore empty keys or numerical array indices (e.g., "0", "1")
+		if k == "" || len(k) < 2 {
+			continue
+		}
+
+		var strVal string
+		switch v := rawVal.(type) {
+		case string:
+			strVal = v
+		case float64:
+			strVal = fmt.Sprintf("%.0f", v)
+		case bool:
+			strVal = fmt.Sprintf("%v", v)
+		case map[string]interface{}:
+			// If frontend passed an object with {key, value}, extract the string value
+			if val, ok := v["value"].(string); ok {
+				strVal = val
+			} else {
+				continue
+			}
+		default:
+			continue
+		}
+
 		_, _ = database.DB.Exec(`
 			INSERT INTO system_settings (key, value, updated_at)
 			VALUES ($1, $2, CURRENT_TIMESTAMP)
 			ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
-		`, k, v)
+		`, k, strVal)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Ayarlar kaydedildi."})
+	c.JSON(http.StatusOK, gin.H{"message": "Ayarlar başarıyla kaydedildi."})
 }
 
 // AgentHeartbeat receives periodic telemetry and graceful shutdown events from Windows/Ubuntu agents

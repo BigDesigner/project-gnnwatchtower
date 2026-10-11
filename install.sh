@@ -27,13 +27,28 @@ INSTALL_DIR="/opt/gnnwatchtower"
 BIN_TARGET="$INSTALL_DIR/gnnwatchtower"
 SERVICE_FILE="/etc/systemd/system/gnnwatchtower.service"
 
-echo -e "${BLUE}[1/5] Dizin yapisi hazirlaniyor...${NC}"
+echo -e "${BLUE}[1/5] Dizin yapisi ve guvenlik hazirlaniyor...${NC}"
 mkdir -p "$INSTALL_DIR/data"
 mkdir -p "$INSTALL_DIR/backups"
 mkdir -p "$INSTALL_DIR/logs"
 chmod 750 "$INSTALL_DIR"
 chmod 700 "$INSTALL_DIR/data"
 chmod 700 "$INSTALL_DIR/backups"
+
+# Mevcut kurulum varsa otomatik yedek al ve servisi durdur
+if [ -f "$INSTALL_DIR/data/gnnwatchtower.db" ]; then
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    echo -e "${CYAN}Mevcut veritabani koruma altina aliniyor: pre-install-${TIMESTAMP}.db...${NC}"
+    cp "$INSTALL_DIR/data/gnnwatchtower.db" "$INSTALL_DIR/backups/pre-install-${TIMESTAMP}.db"
+elif [ -f "./data/gnnwatchtower.db" ]; then
+    echo -e "${CYAN}Yerel test veritabani tespit edildi, /opt/gnnwatchtower altina aktariliyor...${NC}"
+    cp "./data/gnnwatchtower.db" "$INSTALL_DIR/data/gnnwatchtower.db"
+fi
+
+if systemctl is-active --quiet gnnwatchtower 2>/dev/null; then
+    echo -e "${CYAN}Calisan servis gecici olarak durduruluyor...${NC}"
+    systemctl stop gnnwatchtower 2>/dev/null || true
+fi
 
 # 2. İkili Dosyayı (Binary) Hazırla
 echo -e "${BLUE}[2/5] GNNwatchtower ikili dosyasi hazirlaniyor...${NC}"
@@ -76,7 +91,8 @@ else
     git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$BUILD_DIR"
     
     echo -e "${CYAN}Gömülü Web UI ile birlikte tek ikili dosya derleniyor...${NC}"
-    (cd "$BUILD_DIR/backend" && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
+    (cd "$BUILD_DIR/backend" && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BUILD_DIR/gnnwatchtower" ./cmd/server)
+    install -m 755 "$BUILD_DIR/gnnwatchtower" "$BIN_TARGET"
     
     echo -e "${CYAN}Mini-Ajan ikili dosyalari derleniyor (Linux & Windows)...${NC}"
     mkdir -p "$INSTALL_DIR/bin"

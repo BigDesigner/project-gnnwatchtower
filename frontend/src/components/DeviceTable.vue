@@ -91,7 +91,7 @@
                   <span class="material-symbols-outlined text-[15px] text-txt-muted">
                     {{ getDeviceIcon(device.device_type) }}
                   </span>
-                  <span>{{ device.os_version || device.device_type }}</span>
+                  <span>{{ formatDeviceType(device) }}</span>
                 </div>
               </td>
 
@@ -290,13 +290,33 @@ const formatProfile = (profile) => {
   }
 }
 
+const formatDeviceType = (device) => {
+  if (device.os_version) return device.os_version
+  switch (device.device_type) {
+    case 'synology': return 'Synology DSM'
+    case 'nas': return 'Ağ Depolama (NAS)'
+    case 'storage': return 'Depolama Ünitesi'
+    case 'esxi': return 'VMware ESXi'
+    case 'windows': return 'Windows Server'
+    case 'linux':
+    case 'ubuntu': return 'Linux / Ubuntu'
+    case 'switch': return 'Omurga Switch'
+    case 'router': return 'Ağ Yönlendirici'
+    default: return device.device_type || 'Diğer'
+  }
+}
+
 const getDeviceIcon = (type) => {
   switch (type) {
     case 'esxi': return 'dns'
-    case 'synology': return 'database'
+    case 'synology':
+    case 'nas':
+    case 'storage': return 'database'
     case 'windows': return 'desktop_windows'
-    case 'linux': return 'terminal'
-    case 'switch': return 'router'
+    case 'linux':
+    case 'ubuntu': return 'terminal'
+    case 'switch':
+    case 'router': return 'router'
     default: return 'devices'
   }
 }

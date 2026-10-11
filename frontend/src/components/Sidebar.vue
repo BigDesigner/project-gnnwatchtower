@@ -29,7 +29,7 @@
             class="flex items-center gap-2.5 px-2.5 py-1.5 rounded transition-colors text-left"
           >
             <span class="material-symbols-outlined text-[17px]" :class="{ 'text-blue-400': currentView === 'nas' }">database</span>
-            <span>Synology NAS & Depolama</span>
+            <span>Ağ Depolama & NAS</span>
           </button>
 
           <button 

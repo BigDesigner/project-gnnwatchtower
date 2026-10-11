@@ -86,8 +86,251 @@
           </div>
         </div>
 
-        <!-- VIEW: Overview or Devices -->
-        <template v-if="currentView === 'overview' || currentView === 'devices'">
+        <!-- VIEW 1: Overview (Admin Executive Dashboard) -->
+        <template v-if="currentView === 'overview'">
+          <!-- Top Executive Metrics Grid -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Card 1: Total Nodes -->
+            <div 
+              @click="currentView = 'devices'"
+              class="p-4 rounded-lg bg-[#141820] border border-[#232936] hover:border-blue-500/50 cursor-pointer transition-colors flex flex-col gap-2 group"
+            >
+              <div class="flex items-center justify-between text-xs text-txt-muted">
+                <span>Toplam İzlenen Düğüm</span>
+                <span class="material-symbols-outlined text-[18px] text-blue-400 group-hover:translate-x-0.5 transition-transform">dns</span>
+              </div>
+              <div class="flex items-baseline gap-2">
+                <span class="text-3xl font-mono font-semibold text-white">{{ devices.length }}</span>
+                <span class="text-xs text-blue-400 font-medium">Cihaz</span>
+              </div>
+              <span class="text-[11px] text-txt-muted flex items-center gap-1">
+                <span>Tüm envanteri listele</span>
+                <span class="material-symbols-outlined text-[13px]">arrow_forward</span>
+              </span>
+            </div>
+
+            <!-- Card 2: Online Nodes -->
+            <div class="p-4 rounded-lg bg-[#141820] border border-[#232936] flex flex-col gap-2">
+              <div class="flex items-center justify-between text-xs text-txt-muted">
+                <span>Çevrimiçi Düğümler</span>
+                <span class="material-symbols-outlined text-[18px] text-emerald-400">check_circle</span>
+              </div>
+              <div class="flex items-baseline gap-2">
+                <span class="text-3xl font-mono font-semibold text-emerald-400">{{ onlineDevicesCount }}</span>
+                <span class="text-xs text-txt-muted">/ {{ devices.length }}</span>
+              </div>
+              <div class="w-full bg-[#0c0e12] rounded-full h-1.5 overflow-hidden">
+                <div 
+                  class="bg-emerald-500 h-full rounded-full transition-all duration-500"
+                  :style="{ width: devices.length > 0 ? (onlineDevicesCount / devices.length * 100) + '%' : '0%' }"
+                ></div>
+              </div>
+            </div>
+
+            <!-- Card 3: Offline / Alerts -->
+            <div class="p-4 rounded-lg bg-[#141820] border border-[#232936] flex flex-col gap-2">
+              <div class="flex items-center justify-between text-xs text-txt-muted">
+                <span>Kesintideki Cihazlar</span>
+                <span 
+                  class="material-symbols-outlined text-[18px]"
+                  :class="offlineDevices.length > 0 ? 'text-rose-400 animate-pulse' : 'text-txt-muted'"
+                >error</span>
+              </div>
+              <div class="flex items-baseline gap-2">
+                <span 
+                  class="text-3xl font-mono font-semibold"
+                  :class="offlineDevices.length > 0 ? 'text-rose-400' : 'text-txt-primary'"
+                >{{ offlineDevices.length }}</span>
+                <span class="text-xs text-txt-muted">Aktif Alarm</span>
+              </div>
+              <span 
+                class="text-[11px] font-medium"
+                :class="offlineDevices.length === 0 ? 'text-emerald-400' : 'text-rose-400'"
+              >
+                {{ offlineDevices.length === 0 ? '✓ Kritik kesinti bulunmuyor' : 'Müdahale gerekiyor' }}
+              </span>
+            </div>
+
+            <!-- Card 4: Agent Deployments -->
+            <div class="p-4 rounded-lg bg-[#141820] border border-[#232936] flex flex-col gap-2">
+              <div class="flex items-center justify-between text-xs text-txt-muted">
+                <span>Mini-Ajan Yüklü</span>
+                <span class="material-symbols-outlined text-[18px] text-cyan-400">terminal</span>
+              </div>
+              <div class="flex items-baseline gap-2">
+                <span class="text-3xl font-mono font-semibold text-cyan-400">{{ agentInstalledCount }}</span>
+                <span class="text-xs text-txt-muted">Sunucu</span>
+              </div>
+              <span class="text-[11px] text-txt-muted">
+                Canlı CPU, RAM, Disk telemetrisi aktif
+              </span>
+            </div>
+          </div>
+
+          <!-- Split Dashboard Row -->
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Left: Device Category Breakdown (2 Cols on lg) -->
+            <div class="lg:col-span-2 bg-[#141820] rounded-lg border border-[#232936] p-5 flex flex-col gap-4">
+              <div class="flex items-center justify-between pb-3 border-b border-[#232936]">
+                <div class="flex items-center gap-2">
+                  <span class="material-symbols-outlined text-txt-muted">pie_chart</span>
+                  <h3 class="text-sm font-semibold text-white">Altyapı Donanım Dağılımı</h3>
+                </div>
+                <span class="text-xs text-txt-muted font-mono">{{ devices.length }} Toplam</span>
+              </div>
+
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
+                  <div class="flex items-center justify-between text-txt-muted">
+                    <span class="text-[11px]">Linux / Ubuntu</span>
+                    <span class="material-symbols-outlined text-[15px] text-orange-400">terminal</span>
+                  </div>
+                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.linux }}</span>
+                </div>
+
+                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
+                  <div class="flex items-center justify-between text-txt-muted">
+                    <span class="text-[11px]">Windows Server</span>
+                    <span class="material-symbols-outlined text-[15px] text-sky-400">desktop_windows</span>
+                  </div>
+                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.windows }}</span>
+                </div>
+
+                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
+                  <div class="flex items-center justify-between text-txt-muted">
+                    <span class="text-[11px]">VMware ESXi</span>
+                    <span class="material-symbols-outlined text-[15px] text-emerald-400">dns</span>
+                  </div>
+                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.esxi }}</span>
+                </div>
+
+                <div 
+                  @click="currentView = 'nas'"
+                  class="p-3 rounded bg-[#0c0e12] border border-[#232936] hover:border-blue-500/50 cursor-pointer transition-colors flex flex-col gap-1"
+                >
+                  <div class="flex items-center justify-between text-txt-muted">
+                    <span class="text-[11px]">Ağ Depolama (NAS/SAN)</span>
+                    <span class="material-symbols-outlined text-[15px] text-blue-400">database</span>
+                  </div>
+                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.nas }}</span>
+                </div>
+
+                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
+                  <div class="flex items-center justify-between text-txt-muted">
+                    <span class="text-[11px]">Switch & Router</span>
+                    <span class="material-symbols-outlined text-[15px] text-purple-400">router</span>
+                  </div>
+                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.network }}</span>
+                </div>
+
+                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
+                  <div class="flex items-center justify-between text-txt-muted">
+                    <span class="text-[11px]">Diğer Cihazlar</span>
+                    <span class="material-symbols-outlined text-[15px] text-txt-muted">devices_other</span>
+                  </div>
+                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.other }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Attention & Critical Alerts -->
+            <div class="bg-[#141820] rounded-lg border border-[#232936] p-5 flex flex-col gap-4">
+              <div class="flex items-center justify-between pb-3 border-b border-[#232936]">
+                <div class="flex items-center gap-2">
+                  <span class="material-symbols-outlined text-rose-400">notification_important</span>
+                  <h3 class="text-sm font-semibold text-white">Dikkat Gerektiren Düğümler</h3>
+                </div>
+                <span 
+                  class="px-2 py-0.5 rounded text-[10px] font-mono font-medium border"
+                  :class="offlineDevices.length > 0 ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'"
+                >
+                  {{ offlineDevices.length }} Kesinti
+                </span>
+              </div>
+
+              <div class="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
+                <template v-if="offlineDevices.length > 0">
+                  <div 
+                    v-for="d in offlineDevices" 
+                    :key="d.id"
+                    @click="selectDevice(d); currentView = 'devices'"
+                    class="p-2.5 rounded bg-rose-500/5 border border-rose-500/20 hover:border-rose-500/50 cursor-pointer transition-colors flex items-center justify-between text-xs"
+                  >
+                    <div class="flex flex-col gap-0.5">
+                      <span class="font-medium text-white">{{ d.name }}</span>
+                      <span class="font-mono text-[11px] text-txt-muted">{{ d.ip_address }}</span>
+                    </div>
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-rose-500/10 text-rose-400 font-medium">Çevrimdışı</span>
+                  </div>
+                </template>
+                <template v-else>
+                  <div class="py-10 text-center flex flex-col items-center gap-2 text-txt-muted">
+                    <span class="material-symbols-outlined text-[28px] text-emerald-400">verified</span>
+                    <span class="text-xs font-medium text-white">Tüm Düğümler Sağlıklı</span>
+                    <span class="text-[11px]">Şu anda ağda çevrimdışı veya yanıt vermeyen cihaz yok.</span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom: Recent Downtime Incidents Preview -->
+          <div class="bg-[#141820] rounded-lg border border-[#232936] p-5 flex flex-col gap-4">
+            <div class="flex items-center justify-between pb-3 border-b border-[#232936]">
+              <div class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-txt-muted">history</span>
+                <h3 class="text-sm font-semibold text-white">Son Kesintiler ve Olay Günlüğü</h3>
+              </div>
+              <button 
+                @click="currentView = 'incidents'"
+                class="text-xs text-blue-400 hover:text-blue-300 font-medium flex items-center gap-1"
+              >
+                <span>Tümünü Gör ({{ incidents.length }})</span>
+                <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+              </button>
+            </div>
+
+            <template v-if="incidents.length > 0">
+              <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs border-collapse">
+                  <thead class="text-txt-muted text-[10px] uppercase font-mono border-b border-[#232936]">
+                    <tr>
+                      <th class="py-2 px-3">Olay #</th>
+                      <th class="py-2 px-3">Cihaz ID</th>
+                      <th class="py-2 px-3">Başlangıç</th>
+                      <th class="py-2 px-3">Kök Neden Hipotezi</th>
+                      <th class="py-2 px-3">Durum</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-[#1e2533]">
+                    <tr v-for="inc in incidents.slice(0, 5)" :key="inc.id" class="hover:bg-[#181e28]">
+                      <td class="py-2.5 px-3 font-mono">#{{ inc.id }}</td>
+                      <td class="py-2.5 px-3 font-mono text-txt-primary">Cihaz #{{ inc.device_id }}</td>
+                      <td class="py-2.5 px-3 font-mono text-txt-secondary">{{ formatDateTime(inc.started_at) }}</td>
+                      <td class="py-2.5 px-3 text-txt-primary">{{ inc.auto_detection_hypothesis || formatCause(inc.classified_cause) }}</td>
+                      <td class="py-2.5 px-3">
+                        <span 
+                          class="px-2 py-0.5 rounded text-[10px] border font-medium"
+                          :class="inc.resolved_at ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'"
+                        >
+                          {{ inc.resolved_at ? 'Çözüldü' : 'Devam Ediyor' }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <template v-else>
+              <div class="py-6 text-center text-txt-muted text-xs">
+                Kayıtlı kesinti olayı bulunmuyor. Sistem kararlı çalışıyor.
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- VIEW 2: Devices (Nodes & Device Inventory) -->
+        <template v-else-if="currentView === 'devices'">
           <!-- Host & Storage KPI Cards -->
           <HostCards 
             :hosts="devices"
@@ -116,13 +359,13 @@
           />
         </template>
 
-        <!-- VIEW: Synology NAS & Storage -->
+        <!-- VIEW 3: Network Storage & NAS (QNAP, Synology, TrueNAS, SAN) -->
         <template v-else-if="currentView === 'nas'">
           <div class="bg-[#141820] rounded-lg border border-[#232936] p-6 flex flex-col gap-4">
             <div class="flex items-center justify-between pb-4 border-b border-[#232936]">
               <div class="flex items-center gap-2">
                 <span class="material-symbols-outlined text-blue-400">database</span>
-                <h3 class="text-sm font-semibold text-white">Synology NAS ve Depolama Aygıtları</h3>
+                <h3 class="text-sm font-semibold text-white">Ağ Depolama & NAS Cihazları (QNAP, Synology, TrueNAS, SAN)</h3>
               </div>
               <button 
                 @click="openAddNasDevice" 
@@ -146,8 +389,8 @@
             </template>
             <template v-else>
               <div class="py-16 text-center text-txt-muted flex flex-col items-center gap-2">
-                <span class="material-symbols-outlined text-[32px]">dns</span>
-                <p class="text-xs">Kayıtlı Synology veya depolama cihazı bulunamadı. Ağ taraması başlatarak port 5000/5001 dinleyen NAS cihazlarını keşfedebilirsiniz.</p>
+                <span class="material-symbols-outlined text-[32px]">database</span>
+                <p class="text-xs">Kayıtlı ağ depolama (NAS/SAN) cihazı bulunamadı. Ağ taraması başlatıp QNAP, Synology, TrueNAS, Asustor gibi cihazları ekleyebilirsiniz.</p>
                 <button @click="isDiscoveryOpen = true" class="mt-2 px-3 py-1.5 bg-blue-600 text-white text-xs rounded">
                   Ağ Taraması Başlat
                 </button>
@@ -390,9 +633,36 @@ const incidentToClassify = ref(null)
 
 let pollTimer = null
 
-// Filtered NAS devices
+// Filtered NAS / Storage devices
 const nasDevices = computed(() => {
-  return devices.value.filter(d => d.device_type === 'synology')
+  return devices.value.filter(d => ['synology', 'nas', 'storage', 'qnap', 'truenas'].includes((d.device_type || '').toLowerCase()))
+})
+
+// Device breakdown statistics for Admin Dashboard
+const deviceTypeCounts = computed(() => {
+  const counts = { linux: 0, windows: 0, esxi: 0, nas: 0, network: 0, other: 0 }
+  devices.value.forEach(d => {
+    const t = (d.device_type || '').toLowerCase()
+    if (['linux', 'ubuntu', 'debian'].includes(t)) counts.linux++
+    else if (t.includes('win')) counts.windows++
+    else if (t === 'esxi') counts.esxi++
+    else if (['nas', 'synology', 'storage', 'qnap', 'truenas'].includes(t)) counts.nas++
+    else if (['switch', 'router'].includes(t)) counts.network++
+    else counts.other++
+  })
+  return counts
+})
+
+const offlineDevices = computed(() => {
+  return devices.value.filter(d => d.status === 'offline')
+})
+
+const agentInstalledCount = computed(() => {
+  return devices.value.filter(d => d.is_agent_installed === 1).length
+})
+
+const onlineDevicesCount = computed(() => {
+  return devices.value.filter(d => d.status === 'online').length
 })
 
 const fetchData = async () => {
@@ -438,9 +708,9 @@ const openAddDeviceModal = () => {
 
 const openAddNasDevice = () => {
   deviceToEdit.value = {
-    name: 'Synology-NAS',
+    name: 'NAS-Depolama',
     ip_address: '',
-    device_type: 'synology',
+    device_type: 'nas',
     monitoring_profile: 'active',
     check_interval_seconds: 15
   }

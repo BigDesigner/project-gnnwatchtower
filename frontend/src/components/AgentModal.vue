@@ -92,11 +92,48 @@ const winCmd = computed(() => {
   return `powershell -ExecutionPolicy Bypass -Command "irm ${hostUrl.value}/api/agent/install/windows | iex"`
 })
 
-const copyText = (text, type) => {
-  navigator.clipboard.writeText(text)
-  copied.value = type
-  setTimeout(() => {
-    copied.value = ''
-  }, 2000)
+const copyText = async (text, type) => {
+  let success = false
+
+  // 1. Modern Clipboard API (when in secure HTTPS or localhost context)
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      success = true
+    } catch (e) {
+      success = false
+    }
+  }
+
+  // 2. Universal textarea fallback (works on HTTP IP addresses, e.g. http://192.168.1.245:3800)
+  if (!success) {
+    try {
+      const textArea = document.createElement('textarea')
+      textArea.value = text
+      textArea.setAttribute('readonly', '')
+      textArea.style.position = 'fixed'
+      textArea.style.top = '0'
+      textArea.style.left = '0'
+      textArea.style.opacity = '0'
+      textArea.style.pointerEvents = 'none'
+      document.body.appendChild(textArea)
+      textArea.focus()
+      textArea.select()
+      success = document.execCommand('copy')
+      document.body.removeChild(textArea)
+    } catch (err) {
+      console.error('Kopyalama basarisiz:', err)
+    }
+  }
+
+  if (success) {
+    copied.value = type
+    setTimeout(() => {
+      copied.value = ''
+    }, 2000)
+  } else {
+    // 3. Fallback prompt if both fail
+    window.prompt('Komutu panoya kopyalamak için Ctrl+C tuşlarına basınız:', text)
+  }
 }
 </script>

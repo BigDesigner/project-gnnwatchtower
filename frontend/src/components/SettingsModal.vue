@@ -227,9 +227,23 @@ const settings = ref({
 const loadSettings = async () => {
   try {
     const data = await api.getSettings()
-    settings.value = { ...settings.value, ...data }
+    if (data && typeof data === 'object') {
+      if (Array.isArray(data)) {
+        data.forEach(item => {
+          if (item && item.key) {
+            settings.value[item.key] = String(item.value ?? '')
+          }
+        })
+      } else {
+        Object.keys(data).forEach(k => {
+          if (!k.match(/^\d+$/) && data[k] !== undefined && data[k] !== null) {
+            settings.value[k] = String(data[k])
+          }
+        })
+      }
+    }
   } catch (err) {
-    // Ignore load errors
+    console.error('Ayarlar yuklenemedi:', err)
   }
 }
 
@@ -240,7 +254,13 @@ onMounted(() => {
 const saveSettings = async () => {
   isSaving.value = true
   try {
-    await api.updateSettings(settings.value)
+    const payload = {}
+    for (const [k, v] of Object.entries(settings.value)) {
+      if (!k.match(/^\d+$/) && v !== undefined && v !== null) {
+        payload[k] = String(v)
+      }
+    }
+    await api.updateSettings(payload)
     emit('saved')
     emit('close')
   } catch (err) {

@@ -45,7 +45,7 @@
               <option value="linux">Ubuntu / Linux Sunucu</option>
               <option value="windows">Windows Server</option>
               <option value="esxi">VMware ESXi Hipervizör</option>
-              <option value="synology">Synology NAS</option>
+              <option value="nas">Ağ Depolama (NAS - QNAP / Synology / TrueNAS / Asustor)</option>
               <option value="switch">Omurga Switch / Router</option>
               <option value="other">Diğer Donanım</option>
             </select>

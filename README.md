@@ -20,19 +20,13 @@ Kurulum tamamlandığında izleme konsoluna tarayıcınızdan erişebilirsiniz:
 
 ---
 
-## 🏗️ Mimari ve Tasarım Prensipleri
+## 🔄 Güncelleme (Tek Satır Update)
 
-GNNwatchtower, harici servis bağımlılıklarını (PostgreSQL havuzları, harici Docker gereksinimi vb.) ortadan kaldıran **cihaz (appliance)** modelinde tasarlanmıştır:
+Mevcut veritabanınızı (`data/gnnwatchtower.db`) ve ortam ayarlarınızı (`.env`) koruyarak, otomatik yedekleme eşliğinde sistemi en son sürüme güncellemek için:
 
-- **Tek Statik İkili Dosya (Single Binary)**: Go 1.22 `//go:embed` teknolojisi ile derlenmiş Vue 3 SPA frontend'i doğrudan ikili dosya içinde barındırılır.
-- **Pure Go SQLite (WAL Modu)**: Modernc (`modernc.org/sqlite`) sürücüsü sayesinde CGO olmadan çalışır; kilitlenme önleyici WAL modu ve meşguliyet zaman aşımı ile yüksek eşzamanlılık sunar.
-- **Altın Kural: Sıfır Yer Tutucu (Zero Placeholder Invariant)**:
-  - Kod tabanında sahte istatistikler, simüle grafikler veya mock veriler kesinlikle bulunmaz.
-  - Ekranda görünen her metrik, ping gecikmesi, donanım sıcaklığı ve olay kaydı doğrudan canlı soket ve SQLite telemetrisinden beslenir.
-  - Veri bulunmadığında kullanıcıyı yönlendiren otantik boş durumlar (`—` veya `Cihaz Bulunamadı`) sunulur.
-- **Obsidian Telemetry NOC UI**: Cisco Meraki Dark minimal NOC kokpit teması (`#0c0e12`), düşük göz yorgunluğu ve yüksek bilgi yoğunluğu.
-- **Olay Korelasyon Motoru**: Ağ geçidi kesintilerini veya toplu cihaz düşüşlerini analiz ederek otomatik elektrik kesintisi (`power_outage`) hipotezi üretir ve çok kanallı bildirim gönderir (Telegram, Discord, Brevo e-posta).
-- **Otomatik Gece Yedeklemesi**: Her gece saat 03:00'te sistem konfigürasyonu ve geçmiş verilerini JSON bundle olarak otomatik rotasyonla arşivler.
+```bash
+curl -sSL https://raw.githubusercontent.com/BigDesigner/project-gnnwatchtower/main/update.sh | sudo bash
+```
 
 ---
 
@@ -54,21 +48,52 @@ docker compose up -d --build
 
 ---
 
+## 🛠️ Servis Yönetimi (Systemd Komutları)
+
+GNNwatchtower arka plan servisini (`gnnwatchtower.service`) yönetmek için aşağıdaki komutları kullanabilirsiniz:
+
+```bash
+# Servis durumunu kontrol et
+sudo systemctl status gnnwatchtower
+
+# Servisi başlat
+sudo systemctl start gnnwatchtower
+
+# Servisi durdur
+sudo systemctl stop gnnwatchtower
+
+# Servisi yeniden başlat
+sudo systemctl restart gnnwatchtower
+
+# Canlı günlük kayıtlarını (logları) takip et
+sudo journalctl -u gnnwatchtower -f
+
+# Son 50 log kaydını görüntüle
+sudo journalctl -u gnnwatchtower -n 50 --no-pager
+```
+
+---
+
 ## 🖥️ Uç Cihaz Ajanı (GNNwatchtower Agent)
 
-Uzak sunuculardan (Windows ve Linux) CPU, RAM, Disk, Isı ve pre-shutdown (kapanma öncesi) sinyallerini toplamak için hafif ajan mevcuttur.
+Uzak sunuculardan (Windows ve Linux) CPU, RAM, Disk, Isı ve pre-shutdown (kapanma öncesi) sinyallerini toplamak için hafif ve sıfır bağımlılıklı ajan mevcuttur.
 
-Panonuzdaki **Ajan Kurulum** butonundan cihazınıza özel tek seferlik doğrulama belirteci (OTP) ile tek satırda kurulum sağlayabilirsiniz:
+### 1. Sıfır Yapılandırmalı Otomatik Kayıt (Token Gerekmez)
+Herhangi bir parametre vermeden doğrudan çalıştırıldığında sistem otomatik bir kayıt anahtarı atar. Ajan ilk canlılık sinyalini (`heartbeat`) gönderdiğinde sunucu panele **otomatik olarak yeni cihaz olarak eklenir**:
 
-**Linux:**
-```bash
-curl -sSL "http://<SUNUCU_IP>:3800/api/agent/install/linux?token=<OTP_TOKEN>" | sudo bash
-```
+* **Linux (Ubuntu / Debian):**
+  ```bash
+  curl -sSL http://<SUNUCU_IP>:3800/api/agent/install/linux | sudo bash
+  ```
+* **Windows Server (PowerShell Yönetici):**
+  ```powershell
+  powershell -ExecutionPolicy Bypass -Command "irm http://<SUNUCU_IP>:3800/api/agent/install/windows | iex"
+  ```
 
-**Windows (PowerShell):**
-```powershell
-iwr -useb "http://<SUNUCU_IP>:3800/api/agent/install/windows?token=<OTP_TOKEN>" | iex
-```
+### 2. Belirli Bir Cihazla Eşleştirme (Opsiyonel Token)
+Eğer cihazı panele önceden manuel eklediyseniz veya mevcut bir envanter kaydıyla eşleştirmek istiyorsanız, komutun sonuna ilgili cihazın ajan anahtarını ekleyebilirsiniz:
+* `http://<SUNUCU_IP>:3800/api/agent/install/linux?token=<CIHAZ_AJAN_TOKENI>`
+* `http://<SUNUCU_IP>:3800/api/agent/install/windows?token=<CIHAZ_AJAN_TOKENI>`
 
 ---
 
