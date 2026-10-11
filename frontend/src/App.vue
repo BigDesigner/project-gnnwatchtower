@@ -36,9 +36,9 @@
               <span class="text-txt-primary font-medium">GNNwatchtower Appliance</span>
               <span 
                 class="px-1.5 py-0.2 rounded text-[11px] font-medium border"
-                :class="stats.offline_devices === 0 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'"
+                :class="(stats.offline_devices || 0) === 0 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'"
               >
-                {{ stats.offline_devices === 0 ? 'Tüm Sistemler Sağlıklı' : stats.offline_devices + ' Kesinti Mevcut' }}
+                {{ (stats.offline_devices || 0) === 0 ? 'Tüm Sistemler Sağlıklı' : (stats.offline_devices + ' Kesinti Mevcut') }}
               </span>
             </div>
 

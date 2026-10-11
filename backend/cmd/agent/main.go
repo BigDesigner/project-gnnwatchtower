@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 type AgentReport struct {
 	Token          string  `json:"token"`
 	Hostname       string  `json:"hostname"`
+	LocalIP        string  `json:"local_ip"`
 	OSName         string  `json:"os_name"`
 	OSVersion      string  `json:"os_version"`
 	CPUUsagePct    float64 `json:"cpu_usage_pct"`
@@ -24,6 +26,26 @@ type AgentReport struct {
 	DiskUsagePct   float64 `json:"disk_usage_pct"`
 	IsShuttingDown bool    `json:"is_shutting_down"`
 	ShutdownReason string  `json:"shutdown_reason"`
+}
+
+func getLocalIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err == nil {
+		defer conn.Close()
+		localAddr := conn.LocalAddr().(*net.UDPAddr)
+		return localAddr.IP.String()
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err == nil {
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					return ipnet.IP.String()
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func main() {
@@ -78,6 +100,7 @@ func sendHeartbeat(serverURL, token, hostname string) {
 	report := &AgentReport{
 		Token:          token,
 		Hostname:       hostname,
+		LocalIP:        getLocalIP(),
 		OSName:         runtime.GOOS,
 		OSVersion:      runtime.GOARCH,
 		CPUUsagePct:    0.0, // Baseline idle

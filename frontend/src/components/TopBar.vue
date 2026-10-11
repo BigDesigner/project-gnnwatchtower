@@ -7,7 +7,7 @@
           <span class="material-symbols-outlined text-[15px]">token</span>
         </div>
         <span class="font-semibold text-sm tracking-tight text-white">GNNwatchtower</span>
-        <span class="text-[11px] font-mono text-txt-muted px-1.5 py-0.5 rounded bg-[#141820] border border-[#232936]">v0.1.0</span>
+        <span class="text-[11px] font-mono text-emerald-400 font-medium px-2 py-0.5 rounded bg-[#141820] border border-emerald-500/30">v0.2.0</span>
       </div>
 
       <div class="h-4 w-px bg-[#232936]"></div>

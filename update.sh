@@ -90,7 +90,7 @@ if systemctl is-active --quiet gnnwatchtower; then
     SERVER_IP=$(hostname -I | awk '{print $1}' || echo "SUNUCU_IP")
     echo ""
     echo -e "${GREEN}=================================================================${NC}"
-    echo -e "${GREEN}  ✓ GNNwatchtower Basariyla Guncellendi!                         ${NC}"
+    echo -e "${GREEN}  ✓ GNNwatchtower Basariyla Guncellendi! (v0.2.0)               ${NC}"
     echo -e "${GREEN}  ✓ Tum ayarlar, cihazlar ve veritabani korundu.                ${NC}"
     echo -e "${GREEN}=================================================================${NC}"
     echo -e "Yonetim Paneli: ${CYAN}http://${SERVER_IP}:3800${NC}"

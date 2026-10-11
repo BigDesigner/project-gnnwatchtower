@@ -29,6 +29,7 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "healthy",
 				"service": "gnnwatchtower",
+				"version": "0.2.0",
 				"port":    3800,
 			})
 		})

@@ -94,6 +94,7 @@ type SystemSetting struct {
 type AgentReport struct {
 	Token          string          `json:"token"`
 	Hostname       string          `json:"hostname"`
+	LocalIP        string          `json:"local_ip"`
 	OSName         string          `json:"os_name"`
 	OSVersion      string          `json:"os_version"`
 	CPUUsagePct    float64         `json:"cpu_usage_pct"`

@@ -75,4 +75,20 @@
 - **Frontend Production Build**:
   - Recompiled Vue 3 SPA via `npm run build` directly to `backend/cmd/server/dist/`.
 
+## [2026-10-11] - Release v0.2.0: Agent Auto-Registration & Banner Bug Fix
+
+### Completed Work
+- **Version Bump to v0.2.0**:
+  - Incremented version badge in `TopBar.vue` to `v0.2.0` (with emerald highlight), `package.json`, `router.go` (`/api/health`), and `update.sh`.
+- **Banner Bug Fix (`undefined Kesinti Mevcut`)**:
+  - Resolved `undefined` text by guarding `stats.offline_devices` in `App.vue` (`(stats.offline_devices || 0) === 0`).
+- **Agent Local LAN IP Detection & Auto-Registration**:
+  - Updated `backend/cmd/agent/main.go` to detect outbound local LAN IP via UDP socket probe and include `LocalIP` in `AgentReport`.
+  - Updated `AgentHeartbeat` in `handlers.go` to use `LocalIP` (preventing `127.0.0.1` loopback collisions), use `ON CONFLICT (ip_address) DO UPDATE`, and record CPU/RAM/Disk metrics directly into `system_metrics`.
+- **Agent Download Verification**:
+  - Updated `GenerateLinuxAgentScript` and `GenerateWindowsAgentScript` to fail fast with clear instructions if download fails or file size is invalid.
+  - Hardened `DownloadAgentBinary` to enforce minimal executable file size verification (>10KB).
+- **Frontend Production Build**:
+  - Recompiled Vue 3 SPA via `npm run build` directly to `backend/cmd/server/dist/`.
+
 

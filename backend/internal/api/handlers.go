@@ -599,33 +599,45 @@ func AgentHeartbeat(c *gin.Context) {
 
 	if err != nil {
 		clientIP := c.ClientIP()
+		targetIP := report.LocalIP
+		if targetIP == "" || targetIP == "127.0.0.1" {
+			targetIP = clientIP
+		}
+
 		var existingID int
 		var existingName string
 		findErr := database.DB.QueryRow(`
 			SELECT id, name FROM devices WHERE ip_address = $1
-		`, clientIP).Scan(&existingID, &existingName)
+		`, targetIP).Scan(&existingID, &existingName)
 
 		if findErr == nil {
 			devID = existingID
 			devName = existingName
 			_, _ = database.DB.Exec(`
-				UPDATE devices SET agent_token = $1, is_agent_installed = 1 WHERE id = $2
+				UPDATE devices 
+				SET agent_token = $1, is_agent_installed = 1, status = 'online', last_seen_at = CURRENT_TIMESTAMP 
+				WHERE id = $2
 			`, report.Token, devID)
 		} else {
 			name := report.Hostname
 			if name == "" {
-				name = "Agent-" + clientIP
+				name = "Agent-" + targetIP
 			}
-			devType := "ubuntu"
+			devType := "linux"
 			if strings.Contains(strings.ToLower(report.OSName), "windows") {
 				devType = "windows"
 			}
 			res, insErr := database.DB.Exec(`
 				INSERT INTO devices (name, ip_address, device_type, os_version, is_agent_installed, agent_token, status, last_seen_at)
 				VALUES ($1, $2, $3, $4, 1, $5, 'online', CURRENT_TIMESTAMP)
-			`, name, clientIP, devType, report.OSName+" "+report.OSVersion, report.Token)
+				ON CONFLICT (ip_address) DO UPDATE SET
+					agent_token = EXCLUDED.agent_token,
+					is_agent_installed = 1,
+					status = 'online',
+					last_seen_at = CURRENT_TIMESTAMP
+			`, name, targetIP, devType, report.OSName+" "+report.OSVersion, report.Token)
 			if insErr != nil {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Ajan yetkilendirilemedi: " + insErr.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ajan yetkilendirilemedi: " + insErr.Error()})
 				return
 			}
 			id64, _ := res.LastInsertId()
@@ -737,7 +749,10 @@ mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 echo "[GNNwatchtower] Ajan ikili dosyasi indiriliyor..."
-curl -sSL "$SERVER_URL/api/agent/download/linux" -o "$INSTALL_DIR/gnnwatchtower-agent" || true
+if ! curl -fsSL "$SERVER_URL/api/agent/download/linux" -o "$INSTALL_DIR/gnnwatchtower-agent"; then
+    echo "[HATA] Ajan ikili dosyasi sunucudan indirilemedi! Lutfen sunucuda 'update.sh' calistirildigindan emin olunuz."
+    exit 1
+fi
 chmod +x "$INSTALL_DIR/gnnwatchtower-agent"
 
 echo "[GNNwatchtower] Systemd servisi yapilandiriliyor..."
@@ -802,7 +817,17 @@ if (!(Test-Path -Path $installDir)) {
 
 $agentExe = "$installDir\gnnwatchtower-agent.exe"
 Write-Host "[GNNwatchtower] Ajan indiriliyor..."
-Invoke-WebRequest -Uri "$serverUrl/api/agent/download/windows" -OutFile $agentExe -UseBasicParsing
+try {
+    Invoke-WebRequest -Uri "$serverUrl/api/agent/download/windows" -OutFile $agentExe -UseBasicParsing
+} catch {
+    Write-Host "[HATA] Windows Ajan ikili dosyasi indirilemedi! Lutfen sunucuda 'update.sh' calistirildigindan emin olunuz." -ForegroundColor Red
+    exit 1
+}
+
+if ((Get-Item $agentExe).Length -lt 100000) {
+    Write-Host "[HATA] Indirilen dosya boyutu gecersiz ($((Get-Item $agentExe).Length) bayt). Lutfen sunucuda 'update.sh' calistiriniz." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host "[GNNwatchtower] Servis zamanlanmis gorev olarak olusturuluyor..."
 $taskName = "GNNwatchtowerAgent"
@@ -832,25 +857,28 @@ func DownloadAgentBinary(c *gin.Context) {
 	}
 
 	paths := []string{
-		"./bin/" + filename,
 		"/opt/gnnwatchtower/bin/" + filename,
+		"./bin/" + filename,
 		filename,
 	}
 
 	var foundPath string
 	for _, p := range paths {
-		if f, err := os.Stat(p); err == nil && !f.IsDir() {
+		if f, err := os.Stat(p); err == nil && !f.IsDir() && f.Size() > 10000 {
 			foundPath = p
 			break
 		}
 	}
 
 	if foundPath == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Ajan ikili dosyası henüz oluşturulmadı. Lütfen 'go build ./cmd/agent' çalıştırınız."})
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Ajan ikili dosyası henüz oluşturulmadı. Lütfen sunucuda 'update.sh' çalıştırınız.",
+		})
 		return
 	}
 
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Header("Content-Type", "application/octet-stream")
 	c.File(foundPath)
 }
 
