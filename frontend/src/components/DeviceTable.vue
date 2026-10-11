@@ -21,6 +21,13 @@
       <!-- Quick Action Buttons -->
       <div class="flex items-center gap-2 self-end sm:self-auto">
         <button 
+          @click="$emit('open-add-website')"
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition-colors shadow-sm"
+        >
+          <span class="material-symbols-outlined text-[16px]">language</span>
+          <span>Web Sitesi Ekle</span>
+        </button>
+        <button 
           @click="$emit('open-add-device')"
           class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white transition-colors shadow-sm"
         >
@@ -102,7 +109,20 @@
               <!-- IP & MAC -->
               <td class="py-3 px-3 font-mono text-txt-secondary">
                 <div class="flex flex-col">
-                  <span class="text-txt-primary truncate max-w-[150px]">{{ device.ip_address }}</span>
+                  <div class="flex items-center gap-1.5">
+                    <a 
+                      v-if="device.ip_address && (device.ip_address.startsWith('http://') || device.ip_address.startsWith('https://'))"
+                      :href="device.ip_address" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      @click.stop
+                      class="text-emerald-400 hover:text-emerald-300 hover:underline truncate max-w-[150px] inline-flex items-center gap-1"
+                    >
+                      <span>{{ device.ip_address }}</span>
+                      <span class="material-symbols-outlined text-[13px] text-txt-muted">open_in_new</span>
+                    </a>
+                    <span v-else class="text-txt-primary truncate max-w-[150px]">{{ device.ip_address }}</span>
+                  </div>
                   <span v-if="device.mac_address" class="text-[10px] text-txt-muted">{{ device.mac_address }}</span>
                 </div>
               </td>
@@ -249,6 +269,7 @@ const props = defineProps({
 defineEmits([
   'select-device', 
   'open-add-device', 
+  'open-add-website',
   'open-discovery', 
   'edit-device', 
   'delete-device'
@@ -261,6 +282,7 @@ const filterTabs = computed(() => {
   const onlineCount = props.devices.filter(d => d.status === 'online').length
   const warningCount = props.devices.filter(d => d.status === 'warning').length
   const offlineCount = props.devices.filter(d => d.status === 'offline').length
+  const websiteCount = props.devices.filter(d => (d.device_type === 'website' || d.device_type === 'web' || (d.ip_address && (d.ip_address.startsWith('http://') || d.ip_address.startsWith('https://'))))).length
   const maintCount = props.devices.filter(d => d.monitoring_profile === 'maintenance').length
 
   return [
@@ -268,6 +290,7 @@ const filterTabs = computed(() => {
     { id: 'online', label: 'Çalışıyor', count: onlineCount },
     { id: 'warning', label: 'Uyarı', count: warningCount },
     { id: 'offline', label: 'Kesinti', count: offlineCount },
+    { id: 'websites', label: 'Web Siteleri', count: websiteCount },
     { id: 'maintenance', label: 'Bakım', count: maintCount },
   ]
 })
@@ -282,6 +305,8 @@ const filteredDevices = computed(() => {
     list = list.filter(d => d.status === 'warning')
   } else if (activeTab.value === 'offline') {
     list = list.filter(d => d.status === 'offline')
+  } else if (activeTab.value === 'websites') {
+    list = list.filter(d => (d.device_type === 'website' || d.device_type === 'web' || (d.ip_address && (d.ip_address.startsWith('http://') || d.ip_address.startsWith('https://')))))
   } else if (activeTab.value === 'maintenance') {
     list = list.filter(d => d.monitoring_profile === 'maintenance')
   }

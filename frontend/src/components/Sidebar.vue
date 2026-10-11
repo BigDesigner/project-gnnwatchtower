@@ -24,6 +24,20 @@
           </button>
 
           <button 
+            @click="$emit('select-view', 'websites')"
+            :class="currentView === 'websites' ? 'bg-[#141820] text-white font-medium border border-[#232936]/80' : 'text-txt-secondary hover:text-txt-primary hover:bg-[#141820]'"
+            class="flex items-center justify-between px-2.5 py-1.5 rounded transition-colors text-left"
+          >
+            <div class="flex items-center gap-2.5">
+              <span class="material-symbols-outlined text-[17px]" :class="{ 'text-emerald-400': currentView === 'websites' }">language</span>
+              <span>Web Siteleri & URL</span>
+            </div>
+            <span v-if="websiteCount > 0" class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#181e28] text-emerald-400 border border-emerald-500/20">
+              {{ websiteCount }}
+            </span>
+          </button>
+
+          <button 
             @click="$emit('select-view', 'nas')"
             :class="currentView === 'nas' ? 'bg-[#141820] text-white font-medium border border-[#232936]/80' : 'text-txt-secondary hover:text-txt-primary hover:bg-[#141820]'"
             class="flex items-center gap-2.5 px-2.5 py-1.5 rounded transition-colors text-left"
@@ -124,6 +138,10 @@ defineProps({
   gateway: {
     type: Object,
     default: () => ({ ip: '192.168.1.1', status: 'offline', latency_ms: 0 })
+  },
+  websiteCount: {
+    type: Number,
+    default: 0
   }
 })
 

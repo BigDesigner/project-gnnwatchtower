@@ -4,9 +4,14 @@
       <!-- Header -->
       <div class="p-4 border-b border-[#232936] flex items-center justify-between">
         <div class="flex items-center gap-2">
-          <span class="material-symbols-outlined text-blue-400">dns</span>
+          <span 
+            class="material-symbols-outlined" 
+            :class="form.device_type === 'website' ? 'text-emerald-400' : 'text-blue-400'"
+          >
+            {{ form.device_type === 'website' ? 'language' : 'dns' }}
+          </span>
           <h3 class="text-sm font-semibold text-white">
-            {{ editDevice ? 'Cihazı Düzenle' : 'Yeni Cihaz Ekle' }}
+            {{ editDevice ? (form.device_type === 'website' ? 'Web Sitesini Düzenle' : 'Cihazı Düzenle') : (form.device_type === 'website' ? '🌐 Yeni Web Sitesi / URL Ekle (HTTP/HTTPS)' : 'Yeni Cihaz Ekle') }}
           </h3>
         </div>
         <button @click="$emit('close')" class="text-txt-muted hover:text-white">
@@ -128,7 +133,11 @@ import api from '../services/api'
 
 const props = defineProps({
   isOpen: Boolean,
-  editDevice: Object
+  editDevice: Object,
+  initialType: {
+    type: String,
+    default: 'linux'
+  }
 })
 
 const emit = defineEmits(['close', 'saved'])
@@ -145,21 +154,27 @@ const form = ref({
   location: ''
 })
 
-watch(() => props.editDevice, (dev) => {
+watch([() => props.editDevice, () => props.isOpen, () => props.initialType], ([dev, open, initType]) => {
   if (dev) {
     form.value = { ...dev }
   } else {
     form.value = {
       name: '',
-      ip_address: '',
-      device_type: 'linux',
+      ip_address: initType === 'website' ? 'https://' : '',
+      device_type: initType || 'linux',
       monitoring_profile: 'active',
       check_interval_seconds: 15,
-      purpose: '',
+      purpose: initType === 'website' ? 'Web Sitesi / URL İzleme' : '',
       location: ''
     }
   }
 }, { immediate: true })
+
+watch(() => form.value.device_type, (newType) => {
+  if (newType === 'website' && (!form.value.ip_address || form.value.ip_address === '')) {
+    form.value.ip_address = 'https://'
+  }
+})
 
 const saveDevice = async () => {
   isSaving.value = true

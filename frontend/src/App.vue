@@ -17,6 +17,7 @@
     <Sidebar 
       :currentView="currentView"
       :gateway="gateway"
+      :websiteCount="websiteDevices.length"
       @select-view="currentView = $event"
       @open-discovery="isDiscoveryOpen = true"
       @open-agent-modal="isAgentOpen = true"
@@ -63,6 +64,13 @@
 
           <!-- Top Quick Actions -->
           <div class="flex items-center gap-2 self-start lg:self-center">
+            <button 
+              @click="openAddWebsiteModal"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition-colors shadow-sm"
+            >
+              <span class="material-symbols-outlined text-[16px]">language</span>
+              <span>+ Web Sitesi Ekle</span>
+            </button>
             <button 
               @click="isDiscoveryOpen = true"
               class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white transition-colors shadow-sm"
@@ -180,7 +188,7 @@
                 <span class="text-xs text-txt-muted font-mono">{{ devices.length }} Toplam</span>
               </div>
 
-              <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                 <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
                   <div class="flex items-center justify-between text-txt-muted">
                     <span class="text-[11px]">Linux / Ubuntu</span>
@@ -203,6 +211,17 @@
                     <span class="material-symbols-outlined text-[15px] text-emerald-400">dns</span>
                   </div>
                   <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.esxi }}</span>
+                </div>
+
+                <div 
+                  @click="currentView = 'websites'"
+                  class="p-3 rounded bg-[#0c0e12] border border-[#232936] hover:border-emerald-500/50 cursor-pointer transition-colors flex flex-col gap-1"
+                >
+                  <div class="flex items-center justify-between text-txt-muted">
+                    <span class="text-[11px]">Web Siteleri & URL</span>
+                    <span class="material-symbols-outlined text-[15px] text-emerald-400">language</span>
+                  </div>
+                  <span class="text-xl font-mono font-semibold text-white">{{ websiteDevices.length }}</span>
                 </div>
 
                 <div 
@@ -347,6 +366,7 @@
             :searchQuery="searchQuery"
             @select-device="selectDevice"
             @open-add-device="openAddDeviceModal"
+            @open-add-website="openAddWebsiteModal"
             @open-discovery="isDiscoveryOpen = true"
             @edit-device="editDevice"
             @delete-device="deleteDevice"
@@ -359,6 +379,97 @@
             :incidents="incidents"
             @open-incidents="currentView = 'incidents'"
           />
+        </template>
+
+        <!-- VIEW: Websites & HTTP URL Monitoring (Uptime Kuma Style) -->
+        <template v-else-if="currentView === 'websites'">
+          <div class="bg-[#141820] rounded-lg border border-[#232936] p-6 flex flex-col gap-5">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-[#232936] gap-3">
+              <div class="flex items-center gap-2.5">
+                <span class="material-symbols-outlined text-emerald-400 text-[24px]">language</span>
+                <div>
+                  <h3 class="text-sm font-semibold text-white">Web Siteleri ve HTTP(S) URL İzleme</h3>
+                  <p class="text-xs text-txt-muted">Uptime Kuma benzeri anlık web sitesi erişilebilirlik, HTTP yanıt süreleri ve kesinti takibi</p>
+                </div>
+              </div>
+              <button 
+                @click="openAddWebsiteModal" 
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition-colors shadow-sm self-start sm:self-auto"
+              >
+                <span class="material-symbols-outlined text-[16px]">add</span>
+                <span>+ Web Sitesi Ekle</span>
+              </button>
+            </div>
+
+            <!-- Website KPI Summary Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1.5">
+                <span class="text-xs text-txt-muted">İzlenen Web Siteleri</span>
+                <div class="flex items-baseline gap-2">
+                  <span class="text-2xl font-mono font-semibold text-white">{{ websiteDevices.length }}</span>
+                  <span class="text-xs text-txt-muted">Hedef URL</span>
+                </div>
+              </div>
+
+              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1.5">
+                <span class="text-xs text-txt-muted">Erişilebilir (Çevrimiçi)</span>
+                <div class="flex items-baseline gap-2">
+                  <span class="text-2xl font-mono font-semibold text-emerald-400">
+                    {{ websiteDevices.filter(d => d.status === 'online').length }}
+                  </span>
+                  <span class="text-xs text-txt-muted">/ {{ websiteDevices.length }}</span>
+                </div>
+              </div>
+
+              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1.5">
+                <span class="text-xs text-txt-muted">Erişilemeyen (Kesinti)</span>
+                <div class="flex items-baseline gap-2">
+                  <span 
+                    class="text-2xl font-mono font-semibold"
+                    :class="websiteDevices.filter(d => d.status === 'offline').length > 0 ? 'text-rose-400' : 'text-txt-muted'"
+                  >
+                    {{ websiteDevices.filter(d => d.status === 'offline').length }}
+                  </span>
+                  <span class="text-xs text-txt-muted">Alarm</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Website Grid/Table -->
+            <template v-if="websiteDevices.length > 0">
+              <DeviceTable 
+                :devices="websiteDevices"
+                :selectedDeviceId="selectedDevice?.id"
+                :searchQuery="searchQuery"
+                @select-device="selectDevice"
+                @open-add-device="openAddWebsiteModal"
+                @open-add-website="openAddWebsiteModal"
+                @open-discovery="isDiscoveryOpen = true"
+                @edit-device="editDevice"
+                @delete-device="deleteDevice"
+              />
+            </template>
+            <template v-else>
+              <div class="py-16 text-center text-txt-muted flex flex-col items-center gap-3">
+                <div class="w-12 h-12 rounded-full bg-[#181e28] flex items-center justify-center text-emerald-400">
+                  <span class="material-symbols-outlined text-[28px]">language</span>
+                </div>
+                <div class="flex flex-col gap-1 max-w-md">
+                  <span class="text-sm font-medium text-white">Henüz Kayıtlı Web Sitesi Yok</span>
+                  <p class="text-xs text-txt-muted">
+                    İzlemek istediğiniz web sitelerini veya HTTP(S) servislerini ekleyerek yanıt sürelerini ve kesintileri anlık takip edebilirsiniz.
+                  </p>
+                </div>
+                <button 
+                  @click="openAddWebsiteModal" 
+                  class="mt-2 inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-colors shadow-sm"
+                >
+                  <span class="material-symbols-outlined text-[16px]">add</span>
+                  <span>İlk Web Sitesini Ekle</span>
+                </button>
+              </div>
+            </template>
+          </div>
         </template>
 
         <!-- VIEW 3: Network Storage & NAS (QNAP, Synology, TrueNAS, SAN) -->
@@ -565,6 +676,7 @@
     <AddDeviceModal 
       :isOpen="isAddDeviceOpen" 
       :editDevice="deviceToEdit"
+      :initialType="modalInitialType"
       @close="isAddDeviceOpen = false" 
       @saved="fetchData"
     />
@@ -632,8 +744,18 @@ const isLoginOpen = ref(false)
 
 const deviceToEdit = ref(null)
 const incidentToClassify = ref(null)
+const modalInitialType = ref('linux')
 
 let pollTimer = null
+
+// Filtered Website devices (HTTP / HTTPS endpoints)
+const websiteDevices = computed(() => {
+  return devices.value.filter(d => 
+    (d.device_type || '').toLowerCase() === 'website' || 
+    (d.device_type || '').toLowerCase() === 'web' ||
+    (d.ip_address && (d.ip_address.startsWith('http://') || d.ip_address.startsWith('https://')))
+  )
+})
 
 // Filtered NAS / Storage devices
 const nasDevices = computed(() => {
@@ -642,10 +764,11 @@ const nasDevices = computed(() => {
 
 // Device breakdown statistics for Admin Dashboard
 const deviceTypeCounts = computed(() => {
-  const counts = { linux: 0, windows: 0, esxi: 0, nas: 0, network: 0, other: 0 }
+  const counts = { linux: 0, windows: 0, esxi: 0, nas: 0, network: 0, website: 0, other: 0 }
   devices.value.forEach(d => {
     const t = (d.device_type || '').toLowerCase()
-    if (['linux', 'ubuntu', 'debian'].includes(t)) counts.linux++
+    if (t === 'website' || t === 'web' || (d.ip_address && (d.ip_address.startsWith('http://') || d.ip_address.startsWith('https://')))) counts.website++
+    else if (['linux', 'ubuntu', 'debian'].includes(t)) counts.linux++
     else if (t.includes('win')) counts.windows++
     else if (t === 'esxi') counts.esxi++
     else if (['nas', 'synology', 'storage', 'qnap', 'truenas'].includes(t)) counts.nas++
@@ -705,6 +828,20 @@ const selectDevice = async (device) => {
 
 const openAddDeviceModal = () => {
   deviceToEdit.value = null
+  modalInitialType.value = 'linux'
+  isAddDeviceOpen.value = true
+}
+
+const openAddWebsiteModal = () => {
+  deviceToEdit.value = {
+    name: '',
+    ip_address: 'https://',
+    device_type: 'website',
+    monitoring_profile: 'active',
+    check_interval_seconds: 15,
+    purpose: 'Web Sitesi / URL İzleme'
+  }
+  modalInitialType.value = 'website'
   isAddDeviceOpen.value = true
 }
 
