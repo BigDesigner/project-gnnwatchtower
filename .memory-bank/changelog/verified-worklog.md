@@ -46,6 +46,8 @@
   - Authored multi-stage `Dockerfile` (Node 20 -> Go 1.22 Alpine -> Alpine 3.19 runtime).
   - Refactored `docker-compose.yml` for single-binary container on port 3800 with persistent data/backups volumes (resolving BUG-001).
   - Created automated Linux installer script `install.sh` for Ubuntu 22.04 / 24.04 LTS (systemd service, auto directory scaffolding, UFW firewall rule, random JWT generation).
+  - Enhanced `install.sh` with autonomous remote execution capability (`curl -sSL .../install.sh | sudo bash`), auto-installing missing dependencies (`git`, `curl`, `golang-go`), cloning into a temporary sandbox, compiling the single binary, and configuring systemd.
+  - Authored comprehensive `README.md` documenting architecture, zero-placeholder invariant, one-liner installation, and agent scripts.
   - Authored cross-platform agent daemon `backend/cmd/agent/main.go` supporting Windows and Linux with SIGTERM graceful shutdown alerts.
 
 ### Validation Status

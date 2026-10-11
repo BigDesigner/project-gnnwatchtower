@@ -36,18 +36,45 @@ chmod 700 "$INSTALL_DIR/data"
 chmod 700 "$INSTALL_DIR/backups"
 
 # 2. İkili Dosyayı (Binary) Hazırla
-echo -e "${BLUE}[2/5] GNNwatchtower ikili dosyasi yerlestiriliyor...${NC}"
+echo -e "${BLUE}[2/5] GNNwatchtower ikili dosyasi hazirlaniyor...${NC}"
+REPO_URL="https://github.com/BigDesigner/project-gnnwatchtower.git"
+BRANCH="main"
+
 if [ -f "./bin/gnnwatchtower" ]; then
+    echo -e "${CYAN}Mevcut ikili dosya (./bin/gnnwatchtower) kopyalaniyor...${NC}"
     cp "./bin/gnnwatchtower" "$BIN_TARGET"
 elif [ -f "./gnnwatchtower" ]; then
+    echo -e "${CYAN}Mevcut ikili dosya (./gnnwatchtower) kopyalaniyor...${NC}"
     cp "./gnnwatchtower" "$BIN_TARGET"
-elif command -v go >/dev/null 2>&1; then
-    echo -e "${CYAN}Yerel derleme baslatiliyor (Go CGO_ENABLED=0)...${NC}"
+elif [ -d "./backend" ] && command -v go >/dev/null 2>&1; then
+    echo -e "${CYAN}Yerel kaynak koddan derleme baslatiliyor (Go CGO_ENABLED=0)...${NC}"
     (cd backend && (go mod download 2>/dev/null || go mod tidy) && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
 else
-    echo -e "${RED}[HATA] Derlenmis binary (./bin/gnnwatchtower) bulunamadi ve Go yuklu degil.${NC}"
-    echo -e "Lutfen 'apt-get install -y golang-go' kurarak veya onceden derlenmis binary ile calistirin."
-    exit 1
+    echo -e "${CYAN}GitHub uzerinden bagimsiz tek satir kurulum modu algilandi...${NC}"
+    
+    # Gerekli sistem araclarini kontrol et ve eksikse kur (git, curl, golang-go)
+    MISSING_PKGS=()
+    if ! command -v git >/dev/null 2>&1; then MISSING_PKGS+=("git"); fi
+    if ! command -v curl >/dev/null 2>&1; then MISSING_PKGS+=("curl"); fi
+    if ! command -v go >/dev/null 2>&1; then MISSING_PKGS+=("golang-go"); fi
+    
+    if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
+        echo -e "${BLUE}Gerekli sistem paketleri yukleniyor: ${MISSING_PKGS[*]}...${NC}"
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq || true
+        apt-get install -y -qq "${MISSING_PKGS[@]}"
+    fi
+
+    BUILD_DIR=$(mktemp -d -t gnnwatchtower-build-XXXXXX)
+    echo -e "${CYAN}Gecici derleme dizini olusturuldu: $BUILD_DIR${NC}"
+    
+    echo -e "${BLUE}GNNwatchtower kaynak kodlari GitHub'dan klonlaniyor ($BRANCH)...${NC}"
+    git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$BUILD_DIR"
+    
+    echo -e "${CYAN}Gömülü Web UI ile birlikte tek ikili dosya derleniyor...${NC}"
+    (cd "$BUILD_DIR/backend" && (go mod download 2>/dev/null || go mod tidy) && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
+    
+    rm -rf "$BUILD_DIR"
 fi
 
 chmod +x "$BIN_TARGET"
