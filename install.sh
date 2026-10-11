@@ -48,7 +48,7 @@ elif [ -f "./gnnwatchtower" ]; then
     cp "./gnnwatchtower" "$BIN_TARGET"
 elif [ -d "./backend" ] && command -v go >/dev/null 2>&1; then
     echo -e "${CYAN}Yerel kaynak koddan derleme baslatiliyor (Go CGO_ENABLED=0)...${NC}"
-    (cd backend && (go mod download 2>/dev/null || go mod tidy) && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
+    (cd backend && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
 else
     echo -e "${CYAN}GitHub uzerinden bagimsiz tek satir kurulum modu algilandi...${NC}"
     
@@ -72,7 +72,7 @@ else
     git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$BUILD_DIR"
     
     echo -e "${CYAN}Gömülü Web UI ile birlikte tek ikili dosya derleniyor...${NC}"
-    (cd "$BUILD_DIR/backend" && (go mod download 2>/dev/null || go mod tidy) && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
+    (cd "$BUILD_DIR/backend" && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" ./cmd/server)
     
     rm -rf "$BUILD_DIR"
 fi
@@ -82,7 +82,7 @@ chmod +x "$BIN_TARGET"
 # 3. Ortam Değişkeni (.env) Dosyası
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     echo -e "${BLUE}[3/5] .env yapilandirma dosyasi olusturuluyor...${NC}"
-    JWT_SECRET=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
+    JWT_SECRET=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32 || date +%s%N | sha256sum | head -c 32)
     cat <<EOF > "$INSTALL_DIR/.env"
 SERVER_PORT=3800
 GIN_MODE=release
