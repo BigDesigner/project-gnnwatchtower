@@ -19,6 +19,7 @@
 - [x] Automated Linux installer script `install.sh` for Ubuntu 22.04 / 24.04 LTS.
 
 ## Backlog
+- [ ] Over-the-air appliance update system: CLI updater script (`update.sh`) and Web UI One-Click Update in Settings modal with pre-update DB snapshot.
 - [ ] VMware ESXi vSphere API status polling module (Port 443/902).
 - [ ] Synology DSM SNMP polling module (Port 5000/5001).
 
