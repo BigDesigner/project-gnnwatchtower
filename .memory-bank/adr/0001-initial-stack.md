@@ -1,10 +1,15 @@
 # ADR 0001: Initial Architecture Stack & Appliance Topology
 
-- **Status**: Accepted
+> [!WARNING]
+> **SUPERSEDED ARCHITECTURAL DECISION**
+> The single-connection database constraint and reachability mechanism of this decision were superseded on 2026-10-11 by [ADR 0005: High-Concurrency SQLite WAL & Hybrid Ping Telemetry Engine](file://.memory-bank/adr/0005-high-concurrency-sqlite-wal-and-hybrid-ping-engine.md).
+> Refer to the succeeding record for active architecture guidelines and concurrency rationale.
+
+- **Status**: Superseded in part by [ADR 0005: High-Concurrency SQLite WAL & Hybrid Ping Telemetry Engine](file://.memory-bank/adr/0005-high-concurrency-sqlite-wal-and-hybrid-ping-engine.md)
 - **Confidence**: Verified
 - **Date**: 2026-10-11
 - **Supersedes**: None
-- **Superseded By**: None
+- **Superseded By**: [ADR 0005: High-Concurrency SQLite WAL & Hybrid Ping Telemetry Engine](file://.memory-bank/adr/0005-high-concurrency-sqlite-wal-and-hybrid-ping-engine.md)
 
 ## Context
 GNNwatchtower is designed as an on-premise infrastructure, network, and server monitoring appliance deployed on standalone Ubuntu Virtual Machines (20 GB Disk, 4 GB RAM) for Managed Service Providers (MSP). The system must run reliably without external container engine (Docker) or reverse proxy (Nginx) dependencies.

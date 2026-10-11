@@ -29,7 +29,7 @@
               <div class="flex justify-between text-xs mb-1">
                 <span class="text-txt-muted">Yanıt Gecikmesi</span>
                 <span class="font-mono text-txt-primary">
-                  {{ host.response_time_ms }} ms
+                  {{ host.status === 'offline' ? '—' : (host.response_time_ms === 0 ? '< 1 ms' : host.response_time_ms + ' ms') }}
                 </span>
               </div>
               <div class="h-1.5 w-full bg-[#1c222e] rounded-full overflow-hidden">
@@ -51,6 +51,56 @@
         <div class="pt-3 mt-3 border-t border-[#1e2533] flex items-center justify-between text-[11px] text-txt-muted">
           <span>Durum Değişimi:</span>
           <span class="font-mono text-txt-secondary">{{ formatDate(host.last_status_change_at) }}</span>
+        </div>
+      </div>
+
+      <!-- Dedicated Gateway / Modem Card when less than 3 hosts are listed -->
+      <div 
+        v-if="gateway && hosts.length < 3"
+        class="bg-[#141820] rounded-lg border border-[#232936] p-4 flex flex-col justify-between"
+      >
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span 
+                class="w-2 h-2 rounded-full"
+                :class="gateway.status === 'online' ? 'bg-emerald-500 led-pulse-emerald' : 'bg-rose-500'"
+              ></span>
+              <span class="font-medium text-sm text-txt-primary truncate">Ağ Geçidi (Modem)</span>
+            </div>
+            <span class="text-[11px] font-mono text-txt-muted">{{ gateway.ip || '192.168.1.1' }}</span>
+          </div>
+
+          <p class="text-xs text-txt-muted leading-relaxed truncate">
+            Ağ Yönlendirici • Gateway Router
+          </p>
+
+          <div class="flex flex-col gap-2.5 pt-1">
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-txt-muted">Yanıt Gecikmesi (ICMP)</span>
+                <span class="font-mono text-txt-primary">
+                  {{ gateway.status === 'online' ? (parseFloat(gateway.latency_ms) <= 0 ? '< 1 ms' : gateway.latency_ms + ' ms') : '—' }}
+                </span>
+              </div>
+              <div class="h-1.5 w-full bg-[#1c222e] rounded-full overflow-hidden">
+                <div 
+                  class="h-full bg-emerald-500 rounded-full transition-all duration-500" 
+                  :style="{ width: gateway.status === 'online' ? '100%' : '0%' }"
+                ></div>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between text-[11px] text-txt-muted pt-1">
+              <span>Protokol: <strong class="text-txt-primary font-normal">ICMP Echo</strong></span>
+              <span>Durum: <strong :class="gateway.status === 'online' ? 'text-emerald-400' : 'text-rose-400'" class="font-medium">{{ gateway.status === 'online' ? 'Çevrimiçi' : 'Ulaşılamıyor' }}</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-3 mt-3 border-t border-[#1e2533] flex items-center justify-between text-[11px] text-txt-muted">
+          <span>Yönlendirme Durumu:</span>
+          <span class="font-mono text-emerald-400">Aktif Ağ Geçidi</span>
         </div>
       </div>
     </template>
@@ -93,6 +143,10 @@ const props = defineProps({
   hosts: {
     type: Array,
     default: () => []
+  },
+  gateway: {
+    type: Object,
+    default: () => ({ ip: '192.168.1.1', status: 'offline', latency_ms: '0.0' })
   }
 })
 

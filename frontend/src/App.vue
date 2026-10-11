@@ -3,6 +3,7 @@
     <!-- Top Bar Component -->
     <TopBar 
       :stats="stats" 
+      :gateway="gateway"
       v-model:searchQuery="searchQuery" 
       :isRefreshing="isRefreshing"
       @refresh="fetchData"
@@ -334,6 +335,7 @@
           <!-- Host & Storage KPI Cards -->
           <HostCards 
             :hosts="devices"
+            :gateway="gateway"
             @open-discovery="isDiscoveryOpen = true"
             @open-add-device="openAddDeviceModal"
           />

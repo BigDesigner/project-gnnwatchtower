@@ -29,6 +29,19 @@
 
         <span class="text-[#232936]">•</span>
 
+        <span class="flex items-center gap-1.5" :title="'Ağ Geçidi IP: ' + (gateway.ip || '192.168.1.1')">
+          <span 
+            class="w-1.5 h-1.5 rounded-full" 
+            :class="gateway.status === 'online' ? 'bg-emerald-400' : 'bg-rose-400'"
+          ></span>
+          <span>Ağ Geçidi:</span>
+          <strong class="font-mono text-txt-primary font-normal">
+            {{ gateway.status === 'online' ? (parseFloat(gateway.latency_ms) <= 0 ? '< 1 ms' : gateway.latency_ms + ' ms') : 'Ulaşılamıyor' }}
+          </strong>
+        </span>
+
+        <span class="text-[#232936]">•</span>
+
         <span>
           Ort. Sıcaklık: 
           <strong class="font-mono text-txt-primary font-normal">
@@ -152,6 +165,10 @@ const props = defineProps({
   isRefreshing: {
     type: Boolean,
     default: false
+  },
+  gateway: {
+    type: Object,
+    default: () => ({ ip: '192.168.1.1', status: 'offline', latency_ms: '0.0' })
   }
 })
 

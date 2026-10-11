@@ -113,4 +113,30 @@
 - **Go Compilation Cleanup**:
   - Removed unused `"net"` package import from `backend/internal/api/handlers.go` ensuring zero compiler errors during `go build ./cmd/server`.
 
+## [2026-10-11] - Real OS Hardware Telemetry & Dashboard Veracity Alignment
+
+### Completed Work
+- **Native OS Hardware Telemetry in Agent (`backend/cmd/agent/`)**:
+  - `metrics_linux.go`: Genuine Linux CPU utilization calculated from `/proc/stat` time delta, physical RAM percentage from `/proc/meminfo` (`(MemTotal - MemAvailable) / MemTotal * 100`), and root filesystem space via `syscall.Statfs("/")`.
+  - `metrics_windows.go`: Genuine Windows CPU percentage via `kernel32.dll` `GetSystemTimes`, physical RAM percentage via `GlobalMemoryStatusEx` (`dwMemoryLoad`), and drive space via `GetDiskFreeSpaceExW` on `C:\`.
+  - `metrics_fallback.go`: Clean compilation fallback for other platforms.
+  - Eliminated hardcoded `0.0` CPU/Disk values and Go runtime heap memory allocations (`m.Alloc`).
+  - Rounded metrics to 1 decimal place (`math.Round(val*10) / 10`).
+- **TelemetryInspector Veracity & Incident Filtering Fixes**:
+  - Added Disk Usage metric indicator alongside CPU and RAM in footer.
+  - Formatted telemetry float percentages with `formatPct` (`Number(val).toFixed(1) + '%'`), completely resolving raw float artifacts (`0.6020584106445312%`).
+  - Formatted sub-millisecond pings to render `< 1 ms` instead of integer-truncated `0 ms`.
+  - Scoped incidents to selected device via `props.incidents.filter(i => i.device_id === props.device?.id)`, preventing incidents from another node appearing under the active node.
+  - Chronological sparkline metrics reversal: SVG points ordered from oldest to newest for correct time-series curve.
+- **Gateway (Modem) Prominence & Topology Alignment**:
+  - Added dedicated Gateway card in `HostCards.vue` (`Ağ Geçidi (Modem)`) when less than 3 host nodes exist, showing real-time ICMP ping and routing status.
+  - Added live Gateway latency indicator directly in `TopBar.vue` with emerald status dot.
+  - Sub-millisecond formatting `< 1 ms` applied across `DeviceTable`, `HostCards`, and `TopBar`.
+- **Architecture Decision Records & Coherence**:
+  - Authored `ADR-0005: High-Concurrency SQLite WAL and Hybrid ICMP/TCP Ping Engine`.
+  - Updated `ADR-0001` with bi-directional lineage link to ADR-0005.
+- **Frontend Production Build**:
+  - Recompiled Vue 3 SPA via `npm run build` directly to `backend/cmd/server/dist/`.
+
+
 

@@ -115,7 +115,7 @@
                 <span 
                   :class="device.response_time_ms > 100 ? 'text-amber-400' : 'text-emerald-400'"
                 >
-                  {{ device.status === 'offline' ? '—' : device.response_time_ms + ' ms' }}
+                  {{ device.status === 'offline' ? '—' : (device.response_time_ms === 0 ? '< 1 ms' : device.response_time_ms + ' ms') }}
                 </span>
               </td>
 

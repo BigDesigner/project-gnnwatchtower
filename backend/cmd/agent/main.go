@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -113,9 +114,7 @@ func main() {
 }
 
 func sendHeartbeat(serverURL, token, hostname string) {
-	// Sample memory metrics via Go runtime
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
+	cpuPct, ramPct, diskPct := getSystemMetrics()
 
 	report := &AgentReport{
 		Token:          token,
@@ -123,9 +122,9 @@ func sendHeartbeat(serverURL, token, hostname string) {
 		LocalIP:        getLocalIP(serverURL),
 		OSName:         runtime.GOOS,
 		OSVersion:      runtime.GOARCH,
-		CPUUsagePct:    0.0, // Baseline idle
-		RAMUsagePct:    float64(m.Alloc) / 1024.0 / 1024.0, // MB
-		DiskUsagePct:   0.0,
+		CPUUsagePct:    math.Round(cpuPct*10) / 10,
+		RAMUsagePct:    math.Round(ramPct*10) / 10,
+		DiskUsagePct:   math.Round(diskPct*10) / 10,
 		IsShuttingDown: false,
 	}
 
