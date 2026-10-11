@@ -138,5 +138,34 @@
 - **Frontend Production Build**:
   - Recompiled Vue 3 SPA via `npm run build` directly to `backend/cmd/server/dist/`.
 
+## [2026-10-11] - Release v0.3.0: Website (HTTP/S) Monitoring, Real-Time Hardware & Network Telemetry, and Omnichannel Alerting
+
+### Completed Work
+- **Website & URL Monitoring (Uptime Kuma Topology)**:
+  - Added native HTTP/HTTPS website reachability probing (`checkWebsiteReachability` in `poller.go`) with status code verification (<500) and response time calculation.
+  - Added "🌐 Web Sitesi / URL (HTTP/HTTPS)" option in `AddDeviceModal.vue` with dynamic host/URL input placeholders.
+  - Added automatic alert generation on website failure and recovery to Telegram and Discord.
+  - Added dedicated website globe icons and classification formatting in `DeviceTable.vue`.
+- **Full Hardware & Network Telemetry Engine (CPU, RAM, Disk, Net I/O, Temp)**:
+  - Linux agent: Native Network RX/TX KB/s from `/proc/net/dev`, Temperature from `/sys/class/thermal/` and `/sys/class/hwmon/`.
+  - Windows agent: Native Network RX/TX KB/s via `iphlpapi.dll` `GetIfTable`, zero external dependencies.
+  - Database schema: Added `net_rx_kbps` and `net_tx_kbps` columns to `system_metrics` with idempotent runtime migration.
+  - API Performance: Refactored `GetDevices` in `handlers.go` with a single high-performance `LEFT JOIN` on the latest `system_metrics` row.
+  - UI Visualization: Added dedicated `CPU`, `RAM`, `Disk`, `Ağ (I/O)`, and `Sıcaklık` columns to `DeviceTable.vue`, real-time hardware gauges on `HostCards.vue`, and Network I/O in `TelemetryInspector.vue`.
+- **Omnichannel Alerting & Real-Time Diagnostics**:
+  - Wired instant alert dispatches (`incident.DispatchAlert`) to Telegram, Discord, and Brevo for:
+    - New device created / discovered.
+    - Node / Website outage (DOWNTIME) and recovery (RECOVERY).
+    - New agent auto-registration.
+    - Graceful OS shutdown / reboot signals.
+    - Incident diagnosis and operator notes recorded.
+  - Added `POST /api/settings/test-alert` endpoint and interactive "Test Mesajı Gönder" buttons in `SettingsModal.vue` with direct API response status.
+  - Hardened Telegram bot token handling (automatic `bot` prefix strip and whitespace trimming).
+- **Version Bump to v0.3.0**:
+  - Incremented version across `router.go` (`/api/health`), `TopBar.vue` (badge), `frontend/package.json`, and `update.sh`.
+- **Frontend Production Build**:
+  - Recompiled Vue 3 SPA via `npm run build` cleanly to `backend/cmd/server/dist/` in 1.41s.
+
+
 
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,7 +125,21 @@ func (p *Poller) pollDevices() {
 }
 
 func (p *Poller) checkSingleDevice(dev models.Device) {
-	isOnline, latency := PingHost(dev.IPAddress, 1*time.Second)
+	var isOnline bool
+	var latency float64
+
+	isWeb := strings.EqualFold(dev.DeviceType, "website") ||
+		strings.EqualFold(dev.DeviceType, "web") ||
+		strings.EqualFold(dev.DeviceType, "http") ||
+		strings.HasPrefix(dev.IPAddress, "http://") ||
+		strings.HasPrefix(dev.IPAddress, "https://")
+
+	if isWeb {
+		isOnline, latency = checkWebsiteReachability(dev.IPAddress, 3*time.Second)
+	} else {
+		isOnline, latency = PingHost(dev.IPAddress, 1*time.Second)
+	}
+
 	responseTime := int(latency)
 
 	newStatus := "offline"
@@ -146,6 +161,43 @@ func (p *Poller) checkSingleDevice(dev models.Device) {
 
 	// Poll Monitored Services on this device
 	p.pollDeviceServices(dev.ID, dev.IPAddress)
+}
+
+func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, float64) {
+	urlStr := targetURL
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		urlStr = "https://" + urlStr
+	}
+
+	client := &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+
+	start := time.Now()
+	resp, err := client.Get(urlStr)
+	if err != nil {
+		// If https failed and URL was plain host, fallback to http
+		if !strings.HasPrefix(targetURL, "https://") && !strings.HasPrefix(targetURL, "http://") {
+			respHttp, errHttp := client.Get("http://" + targetURL)
+			if errHttp == nil {
+				defer respHttp.Body.Close()
+				latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+				return respHttp.StatusCode < 500, latencyMs
+			}
+		}
+		return false, 0
+	}
+	defer resp.Body.Close()
+
+	latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+	// Status < 500 means server is up (including 200 OK, 301/302 Redirect, 401/403 Auth)
+	return resp.StatusCode < 500, latencyMs
 }
 
 func (p *Poller) handleStatusTransition(dev models.Device, newStatus string, respTime int) {

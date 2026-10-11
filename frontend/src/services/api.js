@@ -116,6 +116,10 @@ export default {
     const res = await client.put('/settings', data)
     return res.data
   },
+  async testAlert(data) {
+    const res = await client.post('/settings/test-alert', data)
+    return res.data
+  },
 
   // Backup & Restore
   async exportBackup() {

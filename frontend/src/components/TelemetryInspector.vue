@@ -73,6 +73,9 @@
             <span class="flex items-center gap-1 text-[#10b981]">
               <span class="w-2 h-0.5 bg-[#10b981]"></span> Disk: {{ formatPct(latestMetric.disk) }}
             </span>
+            <span v-if="latestMetric.net_rx || latestMetric.net_tx" class="flex items-center gap-1 text-sky-400 font-mono text-[10px]">
+              ↓{{ latestMetric.net_rx || 0 }}k ↑{{ latestMetric.net_tx || 0 }}k
+            </span>
             <span v-if="latestMetric.temp" class="text-txt-secondary font-mono">
               {{ latestMetric.temp }}°C
             </span>

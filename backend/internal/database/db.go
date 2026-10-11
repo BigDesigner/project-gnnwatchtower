@@ -133,6 +133,8 @@ func migrateSchema(db *sql.DB) error {
 		ram_usage_pct REAL,
 		disk_usage_pct REAL,
 		temperature_celsius REAL,
+		net_rx_kbps REAL DEFAULT 0,
+		net_tx_kbps REAL DEFAULT 0,
 		recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -175,6 +177,10 @@ func migrateSchema(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
+
+	// Idempotent column migrations for existing databases
+	_, _ = db.Exec("ALTER TABLE system_metrics ADD COLUMN net_rx_kbps REAL DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE system_metrics ADD COLUMN net_tx_kbps REAL DEFAULT 0")
 
 	// Create default admin user if no users exist (admin / admin)
 	var count int

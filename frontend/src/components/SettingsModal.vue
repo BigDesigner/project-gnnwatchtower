@@ -82,15 +82,32 @@
             <div class="grid grid-cols-2 gap-2">
               <input 
                 v-model="settings.telegram_bot_token" 
-                placeholder="Bot Token" 
+                placeholder="Bot Token (Örn: 123456:ABC-DEF)" 
                 class="bg-[#141820] border border-[#232936] rounded px-2.5 py-1.5 text-txt-primary font-mono"
               />
               <input 
                 v-model="settings.telegram_chat_id" 
-                placeholder="Chat ID" 
+                placeholder="Chat ID (Örn: 12345678 veya -100...)" 
                 class="bg-[#141820] border border-[#232936] rounded px-2.5 py-1.5 text-txt-primary font-mono"
               />
             </div>
+            <div class="flex items-center justify-between pt-1">
+              <button 
+                type="button"
+                @click="sendTestAlert('telegram')" 
+                :disabled="testingChannel === 'telegram' || !settings.telegram_bot_token || !settings.telegram_chat_id"
+                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1e2533] hover:bg-[#283142] disabled:opacity-40 text-sky-400 text-[11px] font-medium transition-colors"
+              >
+                <span class="material-symbols-outlined text-[14px]">send</span>
+                <span>{{ testingChannel === 'telegram' ? 'Gönderiliyor...' : 'Telegram Test Mesajı Gönder' }}</span>
+              </button>
+              <span v-if="testResults.telegram" :class="testResults.telegram.success ? 'text-emerald-400' : 'text-rose-400'" class="text-[11px] truncate max-w-xs">
+                {{ testResults.telegram.message }}
+              </span>
+            </div>
+            <p class="text-[10px] text-txt-muted">
+              💡 Telegram Kuralı: Botun size mesaj atabilmesi için Telegram'da botunuza en az bir kez <strong>/start</strong> yazmış olmanız gerekir.
+            </p>
           </div>
 
           <!-- Discord -->
@@ -110,6 +127,20 @@
               placeholder="https://discord.com/api/webhooks/..." 
               class="bg-[#141820] border border-[#232936] rounded px-2.5 py-1.5 text-txt-primary font-mono"
             />
+            <div class="flex items-center justify-between pt-1">
+              <button 
+                type="button"
+                @click="sendTestAlert('discord')" 
+                :disabled="testingChannel === 'discord' || !settings.discord_webhook_url"
+                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1e2533] hover:bg-[#283142] disabled:opacity-40 text-indigo-400 text-[11px] font-medium transition-colors"
+              >
+                <span class="material-symbols-outlined text-[14px]">chat</span>
+                <span>{{ testingChannel === 'discord' ? 'Gönderiliyor...' : 'Discord Test Mesajı Gönder' }}</span>
+              </button>
+              <span v-if="testResults.discord" :class="testResults.discord.success ? 'text-emerald-400' : 'text-rose-400'" class="text-[11px] truncate max-w-xs">
+                {{ testResults.discord.message }}
+              </span>
+            </div>
           </div>
 
           <!-- Brevo -->
@@ -141,6 +172,20 @@
                 placeholder="Bildirim Alıcı E-posta" 
                 class="bg-[#141820] border border-[#232936] rounded px-2.5 py-1.5 text-txt-primary"
               />
+            </div>
+            <div class="flex items-center justify-between pt-1">
+              <button 
+                type="button"
+                @click="sendTestAlert('brevo')" 
+                :disabled="testingChannel === 'brevo' || !settings.brevo_api_key || !settings.brevo_recipient_email"
+                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1e2533] hover:bg-[#283142] disabled:opacity-40 text-emerald-400 text-[11px] font-medium transition-colors"
+              >
+                <span class="material-symbols-outlined text-[14px]">mail</span>
+                <span>{{ testingChannel === 'brevo' ? 'Gönderiliyor...' : 'E-posta Testi Gönder' }}</span>
+              </button>
+              <span v-if="testResults.brevo" :class="testResults.brevo.success ? 'text-emerald-400' : 'text-rose-400'" class="text-[11px] truncate max-w-xs">
+                {{ testResults.brevo.message }}
+              </span>
             </div>
           </div>
         </div>
@@ -250,6 +295,35 @@ const loadSettings = async () => {
 onMounted(() => {
   loadSettings()
 })
+
+const testingChannel = ref(null)
+const testResults = ref({
+  telegram: null,
+  discord: null,
+  brevo: null
+})
+
+const sendTestAlert = async (channel) => {
+  testingChannel.value = channel
+  testResults.value[channel] = null
+  try {
+    const res = await api.testAlert({
+      channel,
+      telegram_bot_token: settings.value.telegram_bot_token,
+      telegram_chat_id: settings.value.telegram_chat_id,
+      discord_webhook_url: settings.value.discord_webhook_url,
+      brevo_api_key: settings.value.brevo_api_key,
+      brevo_sender_email: settings.value.brevo_sender_email,
+      brevo_sender_name: settings.value.brevo_sender_name,
+      brevo_recipient_email: settings.value.brevo_recipient_email
+    })
+    testResults.value[channel] = { success: true, message: res.message || '✓ Gönderildi!' }
+  } catch (err) {
+    testResults.value[channel] = { success: false, message: err.response?.data?.error || err.message }
+  } finally {
+    testingChannel.value = null
+  }
+}
 
 const saveSettings = async () => {
   isSaving.value = true

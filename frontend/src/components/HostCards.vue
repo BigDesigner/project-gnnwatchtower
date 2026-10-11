@@ -45,6 +45,31 @@
               <span>Profil: <strong class="text-txt-primary font-normal">{{ host.monitoring_profile }}</strong></span>
               <span>Aralık: <strong class="text-txt-primary font-normal font-mono">{{ host.check_interval_seconds }}s</strong></span>
             </div>
+
+            <!-- Hardware Metrics if Agent Installed -->
+            <div v-if="host.latest_cpu !== undefined && host.latest_cpu !== null" class="grid grid-cols-3 gap-2 pt-2 border-t border-[#1e2533] text-[11px]">
+              <div class="flex flex-col">
+                <span class="text-txt-muted text-[10px]">CPU</span>
+                <span class="font-mono text-cyan-400 font-semibold">%{{ host.latest_cpu }}</span>
+              </div>
+              <div class="flex flex-col">
+                <span class="text-txt-muted text-[10px]">RAM</span>
+                <span class="font-mono text-amber-400 font-semibold">%{{ host.latest_ram }}</span>
+              </div>
+              <div class="flex flex-col">
+                <span class="text-txt-muted text-[10px]">Disk</span>
+                <span class="font-mono text-emerald-400 font-semibold">%{{ host.latest_disk }}</span>
+              </div>
+            </div>
+
+            <div v-if="host.latest_net_rx || host.latest_net_tx || host.latest_temp" class="flex items-center justify-between text-[10px] font-mono text-txt-secondary pt-0.5">
+              <span v-if="host.latest_net_rx || host.latest_net_tx">
+                Ağ: <span class="text-sky-400">↓{{ host.latest_net_rx || 0 }}k</span> <span class="text-indigo-400">↑{{ host.latest_net_tx || 0 }}k</span>
+              </span>
+              <span v-if="host.latest_temp" class="text-txt-primary">
+                Sıcaklık: {{ host.latest_temp }}°C
+              </span>
+            </div>
           </div>
         </div>
 

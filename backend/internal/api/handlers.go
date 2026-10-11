@@ -18,6 +18,7 @@ import (
 	"gnnwatchtower/internal/backup"
 	"gnnwatchtower/internal/database"
 	"gnnwatchtower/internal/discovery"
+	"gnnwatchtower/internal/incident"
 	"gnnwatchtower/internal/models"
 	"gnnwatchtower/internal/monitor"
 )
@@ -112,12 +113,25 @@ func GetDevices(c *gin.Context) {
 	}
 
 	rows, err := database.DB.Query(`
-		SELECT id, name, ip_address, mac_address, device_type, os_version, purpose, 
-		       location, operator_notes, is_agent_installed, agent_token, monitoring_profile, 
-		       check_interval_seconds, status, last_seen_at, last_status_change_at, 
-		       response_time_ms, created_at, updated_at
-		FROM devices
-		ORDER BY id ASC
+		SELECT 
+			d.id, d.name, d.ip_address, d.mac_address, d.device_type, d.os_version, d.purpose, 
+			d.location, d.operator_notes, d.is_agent_installed, d.agent_token, d.monitoring_profile, 
+			d.check_interval_seconds, d.status, d.last_seen_at, d.last_status_change_at, 
+			d.response_time_ms, d.created_at, d.updated_at,
+			m.cpu_usage_pct, m.ram_usage_pct, m.disk_usage_pct, m.temperature_celsius,
+			m.net_rx_kbps, m.net_tx_kbps
+		FROM devices d
+		LEFT JOIN (
+			SELECT sm1.device_id, sm1.cpu_usage_pct, sm1.ram_usage_pct, sm1.disk_usage_pct, 
+			       sm1.temperature_celsius, sm1.net_rx_kbps, sm1.net_tx_kbps
+			FROM system_metrics sm1
+			JOIN (
+				SELECT device_id, MAX(id) as max_id
+				FROM system_metrics
+				GROUP BY device_id
+			) sm2 ON sm1.id = sm2.max_id
+		) m ON d.id = m.device_id
+		ORDER BY d.id ASC
 	`)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -130,10 +144,12 @@ func GetDevices(c *gin.Context) {
 		var d models.Device
 		var mac, osVer, purp, loc, notes, token sql.NullString
 		var lastSeen sql.NullTime
+		var cpu, ram, disk, temp, netRx, netTx sql.NullFloat64
 
 		if err := rows.Scan(&d.ID, &d.Name, &d.IPAddress, &mac, &d.DeviceType, &osVer, &purp, &loc, &notes,
 			&d.IsAgentInstalled, &token, &d.MonitoringProfile, &d.CheckIntervalSeconds, &d.Status,
-			&lastSeen, &d.LastStatusChangeAt, &d.ResponseTimeMS, &d.CreatedAt, &d.UpdatedAt); err == nil {
+			&lastSeen, &d.LastStatusChangeAt, &d.ResponseTimeMS, &d.CreatedAt, &d.UpdatedAt,
+			&cpu, &ram, &disk, &temp, &netRx, &netTx); err == nil {
 			if mac.Valid {
 				d.MACAddress = mac.String
 			}
@@ -154,6 +170,31 @@ func GetDevices(c *gin.Context) {
 			}
 			if lastSeen.Valid {
 				d.LastSeenAt = &lastSeen.Time
+			}
+
+			if cpu.Valid {
+				v := math.Round(cpu.Float64*10) / 10
+				d.LatestCPU = &v
+			}
+			if ram.Valid {
+				v := math.Round(ram.Float64*10) / 10
+				d.LatestRAM = &v
+			}
+			if disk.Valid {
+				v := math.Round(disk.Float64*10) / 10
+				d.LatestDisk = &v
+			}
+			if temp.Valid && temp.Float64 > 0 {
+				v := math.Round(temp.Float64*10) / 10
+				d.LatestTemp = &v
+			}
+			if netRx.Valid {
+				v := math.Round(netRx.Float64*10) / 10
+				d.LatestNetRx = &v
+			}
+			if netTx.Valid {
+				v := math.Round(netTx.Float64*10) / 10
+				d.LatestNetTx = &v
 			}
 
 			// Attach services
@@ -199,6 +240,12 @@ func CreateDevice(c *gin.Context) {
 		input.DeviceType = "other"
 	}
 
+	input.IPAddress = strings.TrimSpace(input.IPAddress)
+	input.Name = strings.TrimSpace(input.Name)
+	if strings.EqualFold(input.DeviceType, "website") && !strings.HasPrefix(input.IPAddress, "http://") && !strings.HasPrefix(input.IPAddress, "https://") {
+		input.IPAddress = "https://" + input.IPAddress
+	}
+
 	// Generate agent token
 	tokenBytes := make([]byte, 16)
 	_, _ = rand.Read(tokenBytes)
@@ -216,6 +263,8 @@ func CreateDevice(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "Cihaz IP adresi zaten kayıtlı veya veritabanı hatası: " + err.Error()})
 		return
 	}
+
+	incident.DispatchAlert(input.Name, input.IPAddress, "YENİ CİHAZ EKLENDİ", fmt.Sprintf("Envantere yeni bir cihaz kaydedildi (Tip: %s, Profil: %s).", input.DeviceType, input.MonitoringProfile))
 
 	c.JSON(http.StatusCreated, gin.H{"id": id, "agent_token": agentToken, "message": "Cihaz başarıyla eklendi."})
 }
@@ -471,6 +520,32 @@ func ClassifyIncident(c *gin.Context) {
 		return
 	}
 
+	var devName, devIP string
+	_ = database.DB.QueryRow(`
+		SELECT d.name, d.ip_address 
+		FROM downtime_incidents i 
+		JOIN devices d ON d.id = i.device_id 
+		WHERE i.id = $1
+	`, incID).Scan(&devName, &devIP)
+
+	causeLabel := input.ClassifiedCause
+	switch input.ClassifiedCause {
+	case "power_outage":
+		causeLabel = "Elektrik Kesintisi"
+	case "planned_maintenance":
+		causeLabel = "Planlı Bakım"
+	case "system_crash":
+		causeLabel = "Sistem Çökmesi (OS Crash)"
+	case "network_failure":
+		causeLabel = "Ağ / Switch Bağlantı Arızası"
+	}
+
+	detail := fmt.Sprintf("Teşhis: %s. Operatör: %s.", causeLabel, input.OperatorName)
+	if input.OperatorNotes != "" {
+		detail += fmt.Sprintf(" Not: %s", input.OperatorNotes)
+	}
+	incident.DispatchAlert(devName, devIP, "KESİNTİ TEŞHİSİ KAYDEDİLDİ", detail)
+
 	c.JSON(http.StatusOK, gin.H{"message": "Kesinti nedeni başarıyla kaydedildi."})
 }
 
@@ -610,6 +685,89 @@ func UpdateSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Ayarlar başarıyla kaydedildi."})
 }
 
+type TestAlertRequest struct {
+	Channel           string `json:"channel"`
+	TelegramBotToken  string `json:"telegram_bot_token"`
+	TelegramChatID    string `json:"telegram_chat_id"`
+	DiscordWebhookURL string `json:"discord_webhook_url"`
+	BrevoAPIKey       string `json:"brevo_api_key"`
+	BrevoSenderName   string `json:"brevo_sender_name"`
+	BrevoSenderEmail  string `json:"brevo_sender_email"`
+	BrevoRecipient    string `json:"brevo_recipient_email"`
+}
+
+// TestAlert sends an instant verification message to Telegram, Discord or Brevo
+func TestAlert(c *gin.Context) {
+	var req TestAlertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz istek parametreleri"})
+		return
+	}
+
+	// Fallback to database settings if input fields are empty
+	if database.DB != nil {
+		if req.TelegramBotToken == "" {
+			_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'telegram_bot_token'").Scan(&req.TelegramBotToken)
+		}
+		if req.TelegramChatID == "" {
+			_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'telegram_chat_id'").Scan(&req.TelegramChatID)
+		}
+		if req.DiscordWebhookURL == "" {
+			_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'discord_webhook_url'").Scan(&req.DiscordWebhookURL)
+		}
+		if req.BrevoAPIKey == "" {
+			_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'brevo_api_key'").Scan(&req.BrevoAPIKey)
+		}
+		if req.BrevoSenderName == "" {
+			_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'brevo_sender_name'").Scan(&req.BrevoSenderName)
+		}
+		if req.BrevoSenderEmail == "" {
+			_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'brevo_sender_email'").Scan(&req.BrevoSenderEmail)
+		}
+		if req.BrevoRecipient == "" {
+			_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'brevo_recipient_email'").Scan(&req.BrevoRecipient)
+		}
+	}
+
+	testMsg := fmt.Sprintf("✅ [GNNwatchtower] Test bildirimi başarıyla alındı!\nZaman: %s\nBu bildirim kanal entegrasyonunu doğrulamak için gönderilmiştir.", time.Now().Format("2006-01-02 15:04:05"))
+
+	switch strings.ToLower(req.Channel) {
+	case "telegram":
+		if err := incident.SendTelegram(req.TelegramBotToken, req.TelegramChatID, testMsg); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Telegram test bildirimi başarıyla iletildi!"})
+
+	case "discord":
+		if err := incident.SendDiscord(req.DiscordWebhookURL, "**[GNNwatchtower] Test Bildirimi**\n"+testMsg); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Discord test bildirimi başarıyla iletildi!"})
+
+	case "brevo":
+		if err := incident.SendBrevoEmail(
+			req.BrevoAPIKey,
+			req.BrevoSenderName,
+			req.BrevoSenderEmail,
+			req.BrevoRecipient,
+			"Test Sunucusu",
+			"127.0.0.1",
+			"TEST",
+			"GNNwatchtower e-posta entegrasyonu başarıyla doğrulandı.",
+			time.Now().Format("2006-01-02 15:04:05"),
+		); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Brevo test e-postası başarıyla iletildi!"})
+
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bilinmeyen bildirim kanalı"})
+	}
+}
+
 // AgentHeartbeat receives periodic telemetry and graceful shutdown events from Windows/Ubuntu agents
 func AgentHeartbeat(c *gin.Context) {
 	var report models.AgentReport
@@ -674,6 +832,7 @@ func AgentHeartbeat(c *gin.Context) {
 			if devID <= 0 {
 				_ = database.DB.QueryRow("SELECT id FROM devices WHERE ip_address = $1", targetIP).Scan(&devID)
 			}
+			incident.DispatchAlert(devName, targetIP, "YENİ AJAN AKTİF", fmt.Sprintf("Yeni %s ajanı başarıyla sisteme bağlandı ve telemetri göndermeye başladı.", report.OSName))
 		}
 	}
 
@@ -696,6 +855,8 @@ func AgentHeartbeat(c *gin.Context) {
 			VALUES ($1, CURRENT_TIMESTAMP, 'planned_maintenance', 'Ajan Kapanma Bildirimi: ' || $2, 'Ajan tarafından temiz kapanma doğrulandı')
 		`, devID, reason)
 
+		incident.DispatchAlert(devName, report.LocalIP, "PLANLI KAPATMA / YENİDEN BAŞLATMA", "Ajan işletim sistemi temiz kapanma bildirimi iletti: "+reason)
+
 		c.JSON(http.StatusOK, gin.H{"status": "ack_shutdown"})
 		return
 	}
@@ -713,9 +874,9 @@ func AgentHeartbeat(c *gin.Context) {
 
 	// Save telemetry metrics
 	_, _ = database.DB.Exec(`
-		INSERT INTO system_metrics (device_id, cpu_usage_pct, ram_usage_pct, disk_usage_pct, recorded_at)
-		VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-	`, devID, report.CPUUsagePct, report.RAMUsagePct, report.DiskUsagePct)
+		INSERT INTO system_metrics (device_id, cpu_usage_pct, ram_usage_pct, disk_usage_pct, temperature_celsius, net_rx_kbps, net_tx_kbps, recorded_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+	`, devID, report.CPUUsagePct, report.RAMUsagePct, report.DiskUsagePct, report.TempCelsius, report.NetRxKBps, report.NetTxKBps)
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
@@ -982,7 +1143,7 @@ func GetDeviceTelemetry(c *gin.Context) {
 	}
 
 	rows, err := database.DB.Query(`
-		SELECT cpu_usage_pct, ram_usage_pct, disk_usage_pct, temperature_celsius, recorded_at
+		SELECT cpu_usage_pct, ram_usage_pct, disk_usage_pct, temperature_celsius, net_rx_kbps, net_tx_kbps, recorded_at
 		FROM system_metrics
 		WHERE device_id = $1
 		ORDER BY recorded_at DESC
@@ -996,14 +1157,16 @@ func GetDeviceTelemetry(c *gin.Context) {
 
 	var points []gin.H
 	for rows.Next() {
-		var cpu, ram, disk, temp sql.NullFloat64
+		var cpu, ram, disk, temp, netRx, netTx sql.NullFloat64
 		var recordedAt time.Time
-		if err := rows.Scan(&cpu, &ram, &disk, &temp, &recordedAt); err == nil {
+		if err := rows.Scan(&cpu, &ram, &disk, &temp, &netRx, &netTx, &recordedAt); err == nil {
 			points = append(points, gin.H{
-				"cpu":         cpu.Float64,
-				"ram":         ram.Float64,
-				"disk":        disk.Float64,
-				"temp":        temp.Float64,
+				"cpu":         math.Round(cpu.Float64*10) / 10,
+				"ram":         math.Round(ram.Float64*10) / 10,
+				"disk":        math.Round(disk.Float64*10) / 10,
+				"temp":        math.Round(temp.Float64*10) / 10,
+				"net_rx":      math.Round(netRx.Float64*10) / 10,
+				"net_tx":      math.Round(netTx.Float64*10) / 10,
 				"recorded_at": recordedAt.Format("15:04:05"),
 			})
 		}

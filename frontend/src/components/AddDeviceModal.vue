@@ -17,31 +17,36 @@
       <!-- Form -->
       <form @submit.prevent="saveDevice" class="p-5 flex flex-col gap-3.5">
         <div class="flex flex-col gap-1">
-          <label class="text-txt-muted font-medium">Cihaz Adı *</label>
+          <label class="text-txt-muted font-medium">
+            {{ form.device_type === 'website' ? 'Web Sitesi Adı / Başlığı *' : 'Cihaz Adı *' }}
+          </label>
           <input 
             v-model="form.name" 
             required 
-            placeholder="Örn: ESXi-Cluster-01 veya core-switch"
+            :placeholder="form.device_type === 'website' ? 'Örn: Kurumsal Web Sitesi veya API Sunucusu' : 'Örn: ESXi-Cluster-01 veya core-switch'"
             class="bg-[#0c0e12] border border-[#232936] rounded px-3 py-1.5 text-txt-primary focus:outline-none focus:border-blue-500"
           />
         </div>
 
         <div class="grid grid-cols-2 gap-3">
           <div class="flex flex-col gap-1">
-            <label class="text-txt-muted font-medium">IP Adresi *</label>
+            <label class="text-txt-muted font-medium">
+              {{ form.device_type === 'website' ? 'Web Sitesi URL / Host *' : 'IP Adresi *' }}
+            </label>
             <input 
               v-model="form.ip_address" 
               required 
-              placeholder="192.168.1.50"
+              :placeholder="form.device_type === 'website' ? 'https://example.com' : '192.168.1.50'"
               class="bg-[#0c0e12] border border-[#232936] rounded px-3 py-1.5 text-txt-primary font-mono focus:outline-none focus:border-blue-500"
             />
           </div>
           <div class="flex flex-col gap-1">
-            <label class="text-txt-muted font-medium">Cihaz Tipi</label>
+            <label class="text-txt-muted font-medium">Cihaz / Servis Tipi</label>
             <select 
               v-model="form.device_type" 
               class="bg-[#0c0e12] border border-[#232936] rounded px-3 py-1.5 text-txt-primary focus:outline-none focus:border-blue-500"
             >
+              <option value="website">🌐 Web Sitesi / URL (HTTP/HTTPS)</option>
               <option value="linux">Ubuntu / Linux Sunucu</option>
               <option value="windows">Windows Server</option>
               <option value="esxi">VMware ESXi Hipervizör</option>

@@ -26,6 +26,9 @@ type AgentReport struct {
 	CPUUsagePct    float64 `json:"cpu_usage_pct"`
 	RAMUsagePct    float64 `json:"ram_usage_pct"`
 	DiskUsagePct   float64 `json:"disk_usage_pct"`
+	NetRxKBps      float64 `json:"net_rx_kbps"`
+	NetTxKBps      float64 `json:"net_tx_kbps"`
+	TempCelsius    float64 `json:"temp_celsius"`
 	IsShuttingDown bool    `json:"is_shutting_down"`
 	ShutdownReason string  `json:"shutdown_reason"`
 }
@@ -114,7 +117,7 @@ func main() {
 }
 
 func sendHeartbeat(serverURL, token, hostname string) {
-	cpuPct, ramPct, diskPct := getSystemMetrics()
+	cpuPct, ramPct, diskPct, netRx, netTx, temp := getSystemMetrics()
 
 	report := &AgentReport{
 		Token:          token,
@@ -125,6 +128,9 @@ func sendHeartbeat(serverURL, token, hostname string) {
 		CPUUsagePct:    math.Round(cpuPct*10) / 10,
 		RAMUsagePct:    math.Round(ramPct*10) / 10,
 		DiskUsagePct:   math.Round(diskPct*10) / 10,
+		NetRxKBps:      math.Round(netRx*10) / 10,
+		NetTxKBps:      math.Round(netTx*10) / 10,
+		TempCelsius:    math.Round(temp*10) / 10,
 		IsShuttingDown: false,
 	}
 

@@ -5,19 +5,27 @@ package main
 import (
 	"bufio"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var prevCpuTotal uint64
 var prevCpuIdle uint64
 
-func getSystemMetrics() (cpuPct float64, ramPct float64, diskPct float64) {
+var prevNetRx uint64
+var prevNetTx uint64
+var prevNetTime time.Time
+
+func getSystemMetrics() (cpuPct float64, ramPct float64, diskPct float64, netRx float64, netTx float64, temp float64) {
 	ramPct = getLinuxRAM()
 	cpuPct = getLinuxCPU()
 	diskPct = getLinuxDisk()
-	return cpuPct, ramPct, diskPct
+	netRx, netTx = getLinuxNetwork()
+	temp = getLinuxTemp()
+	return cpuPct, ramPct, diskPct, netRx, netTx, temp
 }
 
 func getLinuxRAM() float64 {
@@ -101,5 +109,80 @@ func getLinuxDisk() float64 {
 	if total > 0 {
 		return float64(total-free) / float64(total) * 100.0
 	}
+	return 0
+}
+
+func getLinuxNetwork() (rxKBps float64, txKBps float64) {
+	f, err := os.Open("/proc/net/dev")
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+
+	var totalRx, totalTx uint64
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.Contains(line, ":") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		iface := strings.TrimSpace(parts[0])
+		if iface == "lo" {
+			continue
+		}
+		fields := strings.Fields(parts[1])
+		if len(fields) >= 9 {
+			rx, _ := strconv.ParseUint(fields[0], 10, 64)
+			tx, _ := strconv.ParseUint(fields[8], 10, 64)
+			totalRx += rx
+			totalTx += tx
+		}
+	}
+
+	now := time.Now()
+	if !prevNetTime.IsZero() && totalRx >= prevNetRx && totalTx >= prevNetTx {
+		durationSec := now.Sub(prevNetTime).Seconds()
+		if durationSec > 0 {
+			rxKBps = float64(totalRx-prevNetRx) / durationSec / 1024.0
+			txKBps = float64(totalTx-prevNetTx) / durationSec / 1024.0
+		}
+	}
+
+	prevNetRx = totalRx
+	prevNetTx = totalTx
+	prevNetTime = now
+	return rxKBps, txKBps
+}
+
+func getLinuxTemp() float64 {
+	// Try thermal_zone
+	zones, err := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
+	if err == nil && len(zones) > 0 {
+		for _, z := range zones {
+			content, err := os.ReadFile(z)
+			if err == nil {
+				val, err := strconv.ParseFloat(strings.TrimSpace(string(content)), 64)
+				if err == nil && val > 0 {
+					return val / 1000.0
+				}
+			}
+		}
+	}
+
+	// Try hwmon
+	hwmon, err := filepath.Glob("/sys/class/hwmon/hwmon*/temp1_input")
+	if err == nil && len(hwmon) > 0 {
+		for _, h := range hwmon {
+			content, err := os.ReadFile(h)
+			if err == nil {
+				val, err := strconv.ParseFloat(strings.TrimSpace(string(content)), 64)
+				if err == nil && val > 0 {
+					return val / 1000.0
+				}
+			}
+		}
+	}
+
 	return 0
 }

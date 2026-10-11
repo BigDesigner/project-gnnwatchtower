@@ -42,16 +42,20 @@
       <table class="w-full text-left border-collapse text-xs">
         <thead>
           <tr class="border-b border-[#232936] bg-[#0c0e12]/40 text-txt-muted text-[11px] uppercase tracking-wider font-medium">
-            <th class="py-2.5 px-4 w-10">
+            <th class="py-2.5 px-3 w-10">
               <input type="checkbox" class="rounded border-[#232936] bg-[#141820] text-blue-600 focus:ring-0">
             </th>
-            <th class="py-2.5 px-4">Cihaz Adı</th>
-            <th class="py-2.5 px-4">İşletim Sistemi / Tip</th>
-            <th class="py-2.5 px-4">IP & MAC Adresi</th>
-            <th class="py-2.5 px-4">Profil</th>
-            <th class="py-2.5 px-4">Yanıt (Ping)</th>
-            <th class="py-2.5 px-4">Durum</th>
-            <th class="py-2.5 px-4 text-right">İşlemler</th>
+            <th class="py-2.5 px-3">Cihaz / Servis</th>
+            <th class="py-2.5 px-3">Tür</th>
+            <th class="py-2.5 px-3">IP / URL</th>
+            <th class="py-2.5 px-2 text-center">CPU</th>
+            <th class="py-2.5 px-2 text-center">RAM</th>
+            <th class="py-2.5 px-2 text-center">Disk</th>
+            <th class="py-2.5 px-2 text-center">Ağ (I/O)</th>
+            <th class="py-2.5 px-2 text-center">Sıcaklık</th>
+            <th class="py-2.5 px-3 text-right">Yanıt</th>
+            <th class="py-2.5 px-3 text-center">Durum</th>
+            <th class="py-2.5 px-3 text-right">İşlemler</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-[#1e2533]">
@@ -63,12 +67,12 @@
               class="hover:bg-[#181e28]/60 transition-colors group cursor-pointer"
               @click="$emit('select-device', device)"
             >
-              <td class="py-3 px-4" @click.stop>
+              <td class="py-3 px-3" @click.stop>
                 <input type="checkbox" class="rounded border-[#232936] bg-[#141820] text-blue-600 focus:ring-0">
               </td>
 
               <!-- Name & Agent Indicator -->
-              <td class="py-3 px-4">
+              <td class="py-3 px-3">
                 <div class="flex items-center gap-2">
                   <span 
                     class="w-2 h-2 rounded-full shrink-0"
@@ -78,7 +82,7 @@
                     <span class="font-medium text-txt-primary group-hover:text-blue-400 transition-colors">
                       {{ device.name }}
                     </span>
-                    <span v-if="device.purpose" class="text-[11px] text-txt-muted truncate max-w-[200px]">
+                    <span v-if="device.purpose" class="text-[11px] text-txt-muted truncate max-w-[180px]">
                       {{ device.purpose }}
                     </span>
                   </div>
@@ -86,32 +90,75 @@
               </td>
 
               <!-- OS / Type -->
-              <td class="py-3 px-4 text-txt-secondary">
+              <td class="py-3 px-3 text-txt-secondary">
                 <div class="flex items-center gap-1.5">
                   <span class="material-symbols-outlined text-[15px] text-txt-muted">
                     {{ getDeviceIcon(device.device_type) }}
                   </span>
-                  <span>{{ formatDeviceType(device) }}</span>
+                  <span class="truncate max-w-[120px]">{{ formatDeviceType(device) }}</span>
                 </div>
               </td>
 
               <!-- IP & MAC -->
-              <td class="py-3 px-4 font-mono text-txt-secondary">
+              <td class="py-3 px-3 font-mono text-txt-secondary">
                 <div class="flex flex-col">
-                  <span class="text-txt-primary">{{ device.ip_address }}</span>
+                  <span class="text-txt-primary truncate max-w-[150px]">{{ device.ip_address }}</span>
                   <span v-if="device.mac_address" class="text-[10px] text-txt-muted">{{ device.mac_address }}</span>
                 </div>
               </td>
 
-              <!-- Profile -->
-              <td class="py-3 px-4">
-                <span class="px-2 py-0.5 rounded text-[11px] bg-[#1c222e] text-txt-secondary border border-[#283142]">
-                  {{ formatProfile(device.monitoring_profile) }}
+              <!-- CPU -->
+              <td class="py-3 px-2 text-center font-mono">
+                <span 
+                  v-if="device.latest_cpu !== undefined && device.latest_cpu !== null"
+                  :class="device.latest_cpu > 80 ? 'text-rose-400 font-semibold' : 'text-cyan-400 font-medium'"
+                >
+                  %{{ device.latest_cpu }}
                 </span>
+                <span v-else class="text-txt-muted">—</span>
+              </td>
+
+              <!-- RAM -->
+              <td class="py-3 px-2 text-center font-mono">
+                <span 
+                  v-if="device.latest_ram !== undefined && device.latest_ram !== null"
+                  :class="device.latest_ram > 85 ? 'text-rose-400 font-semibold' : 'text-amber-400 font-medium'"
+                >
+                  %{{ device.latest_ram }}
+                </span>
+                <span v-else class="text-txt-muted">—</span>
+              </td>
+
+              <!-- Disk -->
+              <td class="py-3 px-2 text-center font-mono">
+                <span 
+                  v-if="device.latest_disk !== undefined && device.latest_disk !== null"
+                  :class="device.latest_disk > 90 ? 'text-rose-400 font-semibold' : 'text-emerald-400 font-medium'"
+                >
+                  %{{ device.latest_disk }}
+                </span>
+                <span v-else class="text-txt-muted">—</span>
+              </td>
+
+              <!-- Network Traffic (I/O) -->
+              <td class="py-3 px-2 text-center font-mono text-[10px] text-txt-secondary">
+                <template v-if="(device.latest_net_rx !== undefined && device.latest_net_rx !== null) || (device.latest_net_tx !== undefined && device.latest_net_tx !== null)">
+                  <span class="text-sky-400">↓{{ device.latest_net_rx || 0 }}k</span>
+                  <span class="text-indigo-400 ml-1">↑{{ device.latest_net_tx || 0 }}k</span>
+                </template>
+                <span v-else class="text-txt-muted">—</span>
+              </td>
+
+              <!-- Temperature -->
+              <td class="py-3 px-2 text-center font-mono">
+                <span v-if="device.latest_temp" class="text-txt-primary">
+                  {{ device.latest_temp }}°C
+                </span>
+                <span v-else class="text-txt-muted">—</span>
               </td>
 
               <!-- Ping Latency -->
-              <td class="py-3 px-4 font-mono">
+              <td class="py-3 px-3 text-right font-mono">
                 <span 
                   :class="device.response_time_ms > 100 ? 'text-amber-400' : 'text-emerald-400'"
                 >
@@ -120,7 +167,7 @@
               </td>
 
               <!-- Status Badge -->
-              <td class="py-3 px-4">
+              <td class="py-3 px-3 text-center">
                 <span 
                   class="px-2 py-0.5 rounded text-[11px] font-medium border"
                   :class="getStatusBadgeClass(device.status)"
@@ -291,6 +338,7 @@ const formatProfile = (profile) => {
 }
 
 const formatDeviceType = (device) => {
+  if (device.device_type === 'website' || device.device_type === 'web') return 'Web Sitesi (HTTP/S)'
   if (device.os_version) return device.os_version
   switch (device.device_type) {
     case 'synology': return 'Synology DSM'
@@ -308,6 +356,8 @@ const formatDeviceType = (device) => {
 
 const getDeviceIcon = (type) => {
   switch (type) {
+    case 'website':
+    case 'web': return 'language'
     case 'esxi': return 'dns'
     case 'synology':
     case 'nas':

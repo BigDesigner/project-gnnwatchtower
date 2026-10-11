@@ -26,6 +26,13 @@ type Device struct {
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 
+	LatestCPU   *float64 `json:"latest_cpu,omitempty"`
+	LatestRAM   *float64 `json:"latest_ram,omitempty"`
+	LatestDisk  *float64 `json:"latest_disk,omitempty"`
+	LatestTemp  *float64 `json:"latest_temp,omitempty"`
+	LatestNetRx *float64 `json:"latest_net_rx,omitempty"`
+	LatestNetTx *float64 `json:"latest_net_tx,omitempty"`
+
 	Services []ServiceMonitored `json:"services,omitempty"`
 }
 
@@ -69,6 +76,8 @@ type SystemMetric struct {
 	RAMUsagePct        float64   `json:"ram_usage_pct"`
 	DiskUsagePct       float64   `json:"disk_usage_pct"`
 	TemperatureCelsius float64   `json:"temperature_celsius"`
+	NetRxKBps          float64   `json:"net_rx_kbps"`
+	NetTxKBps          float64   `json:"net_tx_kbps"`
 	RecordedAt         time.Time `json:"recorded_at"`
 }
 
@@ -100,6 +109,9 @@ type AgentReport struct {
 	CPUUsagePct    float64         `json:"cpu_usage_pct"`
 	RAMUsagePct    float64         `json:"ram_usage_pct"`
 	DiskUsagePct   float64         `json:"disk_usage_pct"`
+	NetRxKBps      float64         `json:"net_rx_kbps"`
+	NetTxKBps      float64         `json:"net_tx_kbps"`
+	TempCelsius    float64         `json:"temp_celsius"`
 	UptimeSeconds  uint64          `json:"uptime_seconds"`
 	Services       map[string]bool `json:"services"` // e.g. {"nginx": true, "docker": false}
 	IsShuttingDown bool            `json:"is_shutting_down"`
