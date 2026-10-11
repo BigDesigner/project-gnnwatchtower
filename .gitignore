@@ -1,0 +1,57 @@
+# Ortam Değişkenleri ve Gizli Dosyalar (Asla Git'e gitmemeli)
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+
+# SQLite Veritabanı ve Çalışma Zamanı Verileri (Müşteri & Ağ Bilgileri)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Yedekler, Veritabanı Dökümleri ve Müşteri Raporları
+backups/
+exports/
+*.sql
+*.tar.gz
+*.zip
+*.bak
+
+# Derleme Çıktıları ve İkili Dosyalar (Binaries)
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+backend/gnnwatchtower
+gnnwatchtower
+
+# Frontend Bağımlılıkları ve Derleme Çıktıları
+node_modules/
+dist/
+.vite/
+
+# Test, Geçici Dosyalar ve Günlük Kayıtları (Loglar)
+*.log
+logs/
+coverage.out
+.tmp/
+*.tmp
+
+# IDE ve İşletim Sistemi Geçici Dosyaları
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store

@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.1.0",
+  "session_id": "240e3e17-bd62-4ae4-86b6-d14c0016f43e",
+  "status": "ACTIVE",
+  "mode": "Interactive",
+  "preferred_language": "tr",
+  "timestamp": "2026-10-11T03:17:20+03:00",
+  "active_branch": "main",
+  "last_commit": "e701dd823741f85f17b3fd845acb4428ae317927",
+  "git_history_available": true,
+  "worktree_status": "clean",
+  "current_sprint": {
+    "sprint_id": "v0.1.0-alpha",
+    "active_tasks": [
+      "Sentinel Memory Bank Bootstrapped",
+      "AGPLv3 & Golden Rule (Zero Placeholders) Codified",
+      "Public Repository Secret Isolation Hardened"
+    ]
+  },
+  "tracked_memory_areas": {
+    "adr": ".memory-bank/adr/",
+    "changelog": ".memory-bank/changelog/",
+    "audits": ".memory-bank/audits/",
+    "bugs": ".memory-bank/bugs/",
+    "tasks": ".tasks/",
+    "archive": ".archive/docs-migration/"
+  },
+  "governance_baseline_hashes": {
+    "constitution": null,
+    "boundary_conditions": null,
+    "agents_rules": null
+  }
+}
