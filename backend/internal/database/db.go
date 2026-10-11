@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -25,22 +26,38 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
-	// SQLite connection string with WAL mode and busy timeout
-	dsn := fmt.Sprintf("%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)", dbPath)
-
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
+	}
+
+	// Explicitly configure SQLite PRAGMAs for high-concurrency WAL mode
+	pragmas := []string{
+		"PRAGMA journal_mode = WAL;",
+		"PRAGMA busy_timeout = 10000;",
+		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA cache_size = -20000;",
+		"PRAGMA foreign_keys = ON;",
+		"PRAGMA temp_store = MEMORY;",
+	}
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			log.Printf("[GNNwatchtower DB] Pragma warning (%s): %v", pragma, err)
+		}
 	}
 
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
 
-	db.SetMaxOpenConns(1) // Single writer connection for SQLite concurrency safety
+	// WAL mode enables concurrent readers while writers wait with busy_timeout.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(1 * time.Hour)
+	db.SetConnMaxIdleTime(15 * time.Minute)
 
 	DB = db
-	log.Printf("[GNNwatchtower DB] SQLite initialized at %s (WAL mode enabled)", dbPath)
+	log.Printf("[GNNwatchtower DB] SQLite initialized at %s (High-Concurrency WAL Mode)", dbPath)
 
 	if err := migrateSchema(db); err != nil {
 		return nil, fmt.Errorf("failed running schema migration: %w", err)

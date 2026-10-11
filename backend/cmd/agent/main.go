@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -28,13 +29,32 @@ type AgentReport struct {
 	ShutdownReason string  `json:"shutdown_reason"`
 }
 
-func getLocalIP() string {
+func getLocalIP(serverURL string) string {
+	u, err := url.Parse(serverURL)
+	if err == nil && u.Hostname() != "" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
+		targetPort := u.Port()
+		if targetPort == "" {
+			targetPort = "3800"
+		}
+		conn, err := net.Dial("udp", net.JoinHostPort(u.Hostname(), targetPort))
+		if err == nil {
+			defer conn.Close()
+			localAddr := conn.LocalAddr().(*net.UDPAddr)
+			if localAddr != nil && !localAddr.IP.IsLoopback() {
+				return localAddr.IP.String()
+			}
+		}
+	}
+
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err == nil {
 		defer conn.Close()
 		localAddr := conn.LocalAddr().(*net.UDPAddr)
-		return localAddr.IP.String()
+		if localAddr != nil && !localAddr.IP.IsLoopback() {
+			return localAddr.IP.String()
+		}
 	}
+
 	addrs, err := net.InterfaceAddrs()
 	if err == nil {
 		for _, addr := range addrs {
@@ -100,7 +120,7 @@ func sendHeartbeat(serverURL, token, hostname string) {
 	report := &AgentReport{
 		Token:          token,
 		Hostname:       hostname,
-		LocalIP:        getLocalIP(),
+		LocalIP:        getLocalIP(serverURL),
 		OSName:         runtime.GOOS,
 		OSVersion:      runtime.GOARCH,
 		CPUUsagePct:    0.0, // Baseline idle

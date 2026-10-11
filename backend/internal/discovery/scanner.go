@@ -9,6 +9,7 @@ import (
 
 	"gnnwatchtower/internal/database"
 	"gnnwatchtower/internal/models"
+	"gnnwatchtower/internal/monitor"
 )
 
 var commonPorts = []int{22, 80, 443, 902, 3389, 5000, 5001, 8080}
@@ -104,14 +105,8 @@ func probePorts(ip string, ports []int, timeout time.Duration) []int {
 }
 
 func pingHost(ip string, timeout time.Duration) bool {
-	for _, p := range []int{80, 443, 22} {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, p), timeout)
-		if err == nil {
-			_ = conn.Close()
-			return true
-		}
-	}
-	return false
+	online, _ := monitor.PingHost(ip, timeout)
+	return online
 }
 
 func classifyDevice(openPorts []int) string {

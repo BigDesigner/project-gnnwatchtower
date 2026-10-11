@@ -20,6 +20,7 @@ import (
 	"gnnwatchtower/internal/database"
 	"gnnwatchtower/internal/discovery"
 	"gnnwatchtower/internal/models"
+	"gnnwatchtower/internal/monitor"
 )
 
 // GetDashboardStats returns high-level system summary
@@ -540,13 +541,36 @@ func GetSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, settingsMap)
 }
 
-// UpdateSettings updates key-value configurations with bulletproof type coercion
+// UpdateSettings updates key-value configurations with bulletproof atomic batch transaction
 func UpdateSettings(c *gin.Context) {
+	if database.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database not ready"})
+		return
+	}
+
 	var input map[string]interface{}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	tx, err := database.DB.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Veritabanı işlemi başlatılamadı: " + err.Error()})
+		return
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO system_settings (key, value, updated_at)
+		VALUES ($1, $2, CURRENT_TIMESTAMP)
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+	`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "SQL hazırlama hatası: " + err.Error()})
+		return
+	}
+	defer stmt.Close()
 
 	for k, rawVal := range input {
 		// Ignore empty keys or numerical array indices (e.g., "0", "1")
@@ -573,11 +597,15 @@ func UpdateSettings(c *gin.Context) {
 			continue
 		}
 
-		_, _ = database.DB.Exec(`
-			INSERT INTO system_settings (key, value, updated_at)
-			VALUES ($1, $2, CURRENT_TIMESTAMP)
-			ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
-		`, k, strVal)
+		if _, err := stmt.Exec(k, strVal); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ayar kaydedilemedi: " + err.Error()})
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "İşlem onaylanamadı: " + err.Error()})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ayarlar başarıyla kaydedildi."})
@@ -600,7 +628,7 @@ func AgentHeartbeat(c *gin.Context) {
 	if err != nil {
 		clientIP := c.ClientIP()
 		targetIP := report.LocalIP
-		if targetIP == "" || targetIP == "127.0.0.1" {
+		if targetIP == "" || targetIP == "127.0.0.1" || strings.HasPrefix(targetIP, "127.") || targetIP == "::1" {
 			targetIP = clientIP
 		}
 
@@ -643,6 +671,10 @@ func AgentHeartbeat(c *gin.Context) {
 			id64, _ := res.LastInsertId()
 			devID = int(id64)
 			devName = name
+
+			if devID <= 0 {
+				_ = database.DB.QueryRow("SELECT id FROM devices WHERE ip_address = $1", targetIP).Scan(&devID)
+			}
 		}
 	}
 
@@ -747,6 +779,8 @@ INSTALL_DIR="/opt/gnnwatchtower-agent"
 
 # Calisan eski ajani durdur (Text file busy ve curl 23 yazma hatasini onler)
 systemctl stop gnnwatchtower-agent.service 2>/dev/null || true
+pkill -9 -f gnnwatchtower-agent 2>/dev/null || true
+sleep 1
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
@@ -811,6 +845,12 @@ func GenerateWindowsAgentScript(c *gin.Context) {
 	serverURL := fmt.Sprintf("%s://%s", scheme, host)
 
 	ps1 := fmt.Sprintf(`$ErrorActionPreference = "Stop"
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "[HATA] Windows Ajan kurulumu Yonetici olarak calistirilmalidir (Run PowerShell as Administrator)!" -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "[GNNwatchtower] Windows Ajan kurulumu baslatiliyor..." -ForegroundColor Cyan
 
 $serverUrl = "%s"
@@ -899,7 +939,7 @@ func DownloadAgentBinary(c *gin.Context) {
 	c.File(foundPath)
 }
 
-// checkGatewayHealth tests default gateway latency
+// checkGatewayHealth tests default gateway reachability and ping latency
 func checkGatewayHealth() gin.H {
 	var gwIP string
 	if database.DB != nil {
@@ -909,19 +949,11 @@ func checkGatewayHealth() gin.H {
 		gwIP = "192.168.1.1"
 	}
 
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(gwIP, "53"), 350*time.Millisecond)
-	if err != nil {
-		// Try port 80 if 53 is not listening
-		conn, err = net.DialTimeout("tcp", net.JoinHostPort(gwIP, "80"), 350*time.Millisecond)
-	}
+	isOnline, latencyMs := monitor.PingHost(gwIP, 1*time.Second)
 
 	status := "offline"
-	latencyMs := 0.0
-	if err == nil {
-		_ = conn.Close()
+	if isOnline {
 		status = "online"
-		latencyMs = float64(time.Since(start).Microseconds()) / 1000.0
 	}
 
 	return gin.H{

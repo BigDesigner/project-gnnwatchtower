@@ -124,32 +124,8 @@ func (p *Poller) pollDevices() {
 }
 
 func (p *Poller) checkSingleDevice(dev models.Device) {
-	startTime := time.Now()
-	isOnline := false
-	responseTime := 0
-
-	// 1. Try TCP ports check or ICMP
-	ports := []int{80, 443, 22, 3389, 5000, 902}
-	for _, port := range ports {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", dev.IPAddress, port), 800*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			isOnline = true
-			responseTime = int(time.Since(startTime).Milliseconds())
-			break
-		}
-	}
-
-	// Fallback to ICMP ping check
-	if !isOnline {
-		d := net.Dialer{Timeout: 800 * time.Millisecond}
-		conn, err := d.Dial("ip4:icmp", dev.IPAddress)
-		if err == nil {
-			_ = conn.Close()
-			isOnline = true
-			responseTime = int(time.Since(startTime).Milliseconds())
-		}
-	}
+	isOnline, latency := PingHost(dev.IPAddress, 1*time.Second)
+	responseTime := int(latency)
 
 	newStatus := "offline"
 	if isOnline {
@@ -190,16 +166,17 @@ func (p *Poller) handleStatusTransition(dev models.Device, newStatus string, res
 		`, dev.ID)
 
 		var incidentID int
-		err := tx.QueryRow(`
+		_ = tx.QueryRow(`
 			INSERT INTO downtime_incidents (device_id, started_at, classified_cause, auto_detection_hypothesis)
 			VALUES ($1, CURRENT_TIMESTAMP, 'unclassified', 'Lost network response')
 			RETURNING id
 		`, dev.ID).Scan(&incidentID)
 
-		if err == nil {
-			_ = tx.Commit()
+		if err := tx.Commit(); err == nil {
 			// Check correlation: Did multiple devices drop right now?
-			incident.EvaluateSimultaneousOutages(dev.ID, incidentID)
+			if incidentID > 0 {
+				incident.EvaluateSimultaneousOutages(dev.ID, incidentID)
+			}
 			incident.DispatchAlert(dev.Name, dev.IPAddress, "DOWNTIME", "Device stopped responding.")
 		}
 	} else if newStatus == "online" {
@@ -228,8 +205,9 @@ func (p *Poller) handleStatusTransition(dev models.Device, newStatus string, res
 			`, duration, incID)
 		}
 
-		_ = tx.Commit()
-		incident.DispatchAlert(dev.Name, dev.IPAddress, "RECOVERY", fmt.Sprintf("Device recovered and is online (Latency: %dms).", respTime))
+		if err := tx.Commit(); err == nil {
+			incident.DispatchAlert(dev.Name, dev.IPAddress, "RECOVERY", fmt.Sprintf("Device recovered and is online (Latency: %dms).", respTime))
+		}
 	}
 }
 

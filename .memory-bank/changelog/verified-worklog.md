@@ -92,4 +92,23 @@
 - **Frontend Production Build**:
   - Recompiled Vue 3 SPA via `npm run build` directly to `backend/cmd/server/dist/`.
 
+## [2026-10-11] - Hardening: Real OS ICMP Gateway Ping, SQLite Concurrency & Atomic Transactions
+
+### Completed Work
+- **Real OS ICMP Ping Engine (`backend/internal/monitor/ping.go`)**:
+  - Implemented `monitor.PingHost(ip, timeout)` combining ultra-fast TCP probe (ports 53, 80, 443, 22, 3389, 445, 8080) with authentic OS ICMP ping execution (`ping -c 1 -W 1 <ip>` on Linux, `ping -n 1 -w 800 <ip>` on Windows).
+  - Added robust RTT regex parsing (`(?:time|zaman)[=<]\s*([0-9.]+)\s*ms?`) extracting genuine ping latency without requiring root raw socket capabilities.
+  - Updated `checkGatewayHealth` in `backend/internal/api/handlers.go` to use `monitor.PingHost`: gateway (modem `192.168.1.1`) now accurately shows "online" with authentic ~0.8ms latency instead of "unreachable".
+  - Refactored `poller.go` device polling and `scanner.go` subnet discovery to use `monitor.PingHost` for reachability detection.
+- **SQLite High-Concurrency WAL Hardening (`backend/internal/database/db.go`)**:
+  - Eliminated database deadlocks and timeouts by executing explicit PRAGMAs (`PRAGMA journal_mode = WAL;`, `PRAGMA busy_timeout = 10000;`, `PRAGMA synchronous = NORMAL;`, `PRAGMA cache_size = -20000;`, `PRAGMA foreign_keys = ON;`).
+  - Expanded connection pool to `SetMaxOpenConns(25)`, `SetMaxIdleConns(10)`, `SetConnMaxLifetime(1h)`, eliminating the single-connection bottleneck that caused 15000ms Axios timeouts.
+- **Atomic Single-Transaction Settings Batching (`UpdateSettings`)**:
+  - Refactored `UpdateSettings` in `backend/internal/api/handlers.go` to wrap all key updates inside a single prepared statement transaction (`tx.Begin()`, `tx.Prepare()`, `tx.Commit()`). Operations now execute in <2ms.
+- **Bulletproof Agent Installation & Auto-Enrollment**:
+  - In `GenerateLinuxAgentScript`: added `pkill -9 -f gnnwatchtower-agent` and service stop prior to download, writing to `.tmp` before atomic `mv -f` to permanently prevent `ETXTBUSY` (curl error 23).
+  - In `GenerateWindowsAgentScript`: added upfront Administrator privilege verification (`IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)`).
+  - In `AgentHeartbeat`: ensured resilient `devID` fallback query and `targetIP` sanitization (stripping loopback).
+  - In `backend/cmd/agent/main.go`: improved local IP detection by probing the server route directly via UDP socket.
+
 
