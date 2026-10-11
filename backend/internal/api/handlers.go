@@ -745,15 +745,21 @@ SERVER_URL="%s"
 TOKEN="%s"
 INSTALL_DIR="/opt/gnnwatchtower-agent"
 
+# Calisan eski ajani durdur (Text file busy ve curl 23 yazma hatasini onler)
+systemctl stop gnnwatchtower-agent.service 2>/dev/null || true
+
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 echo "[GNNwatchtower] Ajan ikili dosyasi indiriliyor..."
-if ! curl -fsSL "$SERVER_URL/api/agent/download/linux" -o "$INSTALL_DIR/gnnwatchtower-agent"; then
+rm -f "$INSTALL_DIR/gnnwatchtower-agent.tmp"
+if ! curl -fsSL "$SERVER_URL/api/agent/download/linux" -o "$INSTALL_DIR/gnnwatchtower-agent.tmp"; then
     echo "[HATA] Ajan ikili dosyasi sunucudan indirilemedi! Lutfen sunucuda 'update.sh' calistirildigindan emin olunuz."
     exit 1
 fi
-chmod +x "$INSTALL_DIR/gnnwatchtower-agent"
+
+chmod +x "$INSTALL_DIR/gnnwatchtower-agent.tmp"
+mv -f "$INSTALL_DIR/gnnwatchtower-agent.tmp" "$INSTALL_DIR/gnnwatchtower-agent"
 
 echo "[GNNwatchtower] Systemd servisi yapilandiriliyor..."
 cat <<EOF > /etc/systemd/system/gnnwatchtower-agent.service
@@ -810,24 +816,35 @@ Write-Host "[GNNwatchtower] Windows Ajan kurulumu baslatiliyor..." -ForegroundCo
 $serverUrl = "%s"
 $token = "%s"
 $installDir = "C:\Program Files\GNNwatchtower-Agent"
+$taskName = "GNNwatchtowerAgent"
+
+# Calisan eski ajani ve gorevi durdur
+Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+Stop-Process -Name "gnnwatchtower-agent" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
 
 if (!(Test-Path -Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 }
 
 $agentExe = "$installDir\gnnwatchtower-agent.exe"
+$agentTmp = "$installDir\gnnwatchtower-agent.tmp"
+
 Write-Host "[GNNwatchtower] Ajan indiriliyor..."
 try {
-    Invoke-WebRequest -Uri "$serverUrl/api/agent/download/windows" -OutFile $agentExe -UseBasicParsing
+    Invoke-WebRequest -Uri "$serverUrl/api/agent/download/windows" -OutFile $agentTmp -UseBasicParsing
 } catch {
     Write-Host "[HATA] Windows Ajan ikili dosyasi indirilemedi! Lutfen sunucuda 'update.sh' calistirildigindan emin olunuz." -ForegroundColor Red
     exit 1
 }
 
-if ((Get-Item $agentExe).Length -lt 100000) {
-    Write-Host "[HATA] Indirilen dosya boyutu gecersiz ($((Get-Item $agentExe).Length) bayt). Lutfen sunucuda 'update.sh' calistiriniz." -ForegroundColor Red
+if ((Get-Item $agentTmp).Length -lt 50000) {
+    Remove-Item $agentTmp -Force -ErrorAction SilentlyContinue
+    Write-Host "[HATA] Indirilen dosya boyutu gecersiz. Lutfen sunucuda 'update.sh' calistiriniz." -ForegroundColor Red
     exit 1
 }
+
+Move-Item -Path $agentTmp -Destination $agentExe -Force
 
 Write-Host "[GNNwatchtower] Servis zamanlanmis gorev olarak olusturuluyor..."
 $taskName = "GNNwatchtowerAgent"

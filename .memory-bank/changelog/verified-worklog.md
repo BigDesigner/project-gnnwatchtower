@@ -85,8 +85,9 @@
 - **Agent Local LAN IP Detection & Auto-Registration**:
   - Updated `backend/cmd/agent/main.go` to detect outbound local LAN IP via UDP socket probe and include `LocalIP` in `AgentReport`.
   - Updated `AgentHeartbeat` in `handlers.go` to use `LocalIP` (preventing `127.0.0.1` loopback collisions), use `ON CONFLICT (ip_address) DO UPDATE`, and record CPU/RAM/Disk metrics directly into `system_metrics`.
-- **Agent Download Verification**:
-  - Updated `GenerateLinuxAgentScript` and `GenerateWindowsAgentScript` to fail fast with clear instructions if download fails or file size is invalid.
+- **Agent Download Verification & File Lock Fix (`curl 23 write error`)**:
+  - Resolved `curl (23) client returned ERROR on write` caused by `ETXTBUSY` when updating active running agents.
+  - Script now stops existing services before download, streams to a `.tmp` file, and uses atomic `rename` (`mv -f` / `Move-Item -Force`).
   - Hardened `DownloadAgentBinary` to enforce minimal executable file size verification (>10KB).
 - **Frontend Production Build**:
   - Recompiled Vue 3 SPA via `npm run build` directly to `backend/cmd/server/dist/`.
