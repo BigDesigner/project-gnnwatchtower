@@ -134,8 +134,10 @@ func (p *Poller) checkSingleDevice(dev models.Device) {
 		strings.HasPrefix(dev.IPAddress, "http://") ||
 		strings.HasPrefix(dev.IPAddress, "https://")
 
+	var statusCode int
+	var proto string
 	if isWeb {
-		isOnline, latency = checkWebsiteReachability(dev.IPAddress, 3*time.Second)
+		isOnline, latency, statusCode, proto = checkWebsiteReachability(dev.IPAddress, 3*time.Second)
 	} else {
 		isOnline, latency = PingHost(dev.IPAddress, 1*time.Second)
 	}
@@ -147,23 +149,45 @@ func (p *Poller) checkSingleDevice(dev models.Device) {
 		newStatus = "online"
 	}
 
+	var notesUpdate string
+	if isWeb {
+		if statusCode > 0 {
+			notesUpdate = fmt.Sprintf("HTTP %d • %s", statusCode, proto)
+		} else {
+			notesUpdate = "Bağlantı Hatası"
+		}
+	}
+
 	// Check status transition
 	if dev.Status != newStatus {
+		if isWeb && notesUpdate != "" {
+			_, _ = database.DB.Exec(`UPDATE devices SET operator_notes = $1 WHERE id = $2`, notesUpdate, dev.ID)
+		}
 		p.handleStatusTransition(dev, newStatus, responseTime)
 	} else if isOnline {
 		// Update ping time and last seen
-		_, _ = database.DB.Exec(`
-			UPDATE devices 
-			SET last_seen_at = CURRENT_TIMESTAMP, response_time_ms = $1, updated_at = CURRENT_TIMESTAMP 
-			WHERE id = $2
-		`, responseTime, dev.ID)
+		if isWeb && notesUpdate != "" {
+			_, _ = database.DB.Exec(`
+				UPDATE devices 
+				SET last_seen_at = CURRENT_TIMESTAMP, response_time_ms = $1, operator_notes = $2, updated_at = CURRENT_TIMESTAMP 
+				WHERE id = $3
+			`, responseTime, notesUpdate, dev.ID)
+		} else {
+			_, _ = database.DB.Exec(`
+				UPDATE devices 
+				SET last_seen_at = CURRENT_TIMESTAMP, response_time_ms = $1, updated_at = CURRENT_TIMESTAMP 
+				WHERE id = $2
+			`, responseTime, dev.ID)
+		}
+	} else if isWeb && notesUpdate != "" {
+		_, _ = database.DB.Exec(`UPDATE devices SET operator_notes = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, notesUpdate, dev.ID)
 	}
 
 	// Poll Monitored Services on this device
 	p.pollDeviceServices(dev.ID, dev.IPAddress)
 }
 
-func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, float64) {
+func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, float64, int, string) {
 	urlStr := targetURL
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		urlStr = "https://" + urlStr
@@ -188,16 +212,20 @@ func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, fl
 			if errHttp == nil {
 				defer respHttp.Body.Close()
 				latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-				return respHttp.StatusCode < 500, latencyMs
+				return respHttp.StatusCode < 500, latencyMs, respHttp.StatusCode, "HTTP"
 			}
 		}
-		return false, 0
+		return false, 0, 0, ""
 	}
 	defer resp.Body.Close()
 
 	latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+	proto := "HTTP"
+	if resp.TLS != nil {
+		proto = "HTTPS"
+	}
 	// Status < 500 means server is up (including 200 OK, 301/302 Redirect, 401/403 Auth)
-	return resp.StatusCode < 500, latencyMs
+	return resp.StatusCode < 500, latencyMs, resp.StatusCode, proto
 }
 
 func (p *Poller) handleStatusTransition(dev models.Device, newStatus string, respTime int) {

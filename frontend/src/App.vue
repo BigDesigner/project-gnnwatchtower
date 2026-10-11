@@ -65,13 +65,6 @@
           <!-- Top Quick Actions -->
           <div class="flex items-center gap-2 self-start lg:self-center">
             <button 
-              @click="openAddWebsiteModal"
-              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition-colors shadow-sm"
-            >
-              <span class="material-symbols-outlined text-[16px]">language</span>
-              <span>+ Web Sitesi Ekle</span>
-            </button>
-            <button 
               @click="isDiscoveryOpen = true"
               class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white transition-colors shadow-sm"
             >
@@ -273,7 +266,7 @@
                   <div 
                     v-for="d in offlineDevices" 
                     :key="d.id"
-                    @click="selectDevice(d); currentView = 'devices'"
+                    @click="selectDevice(d); currentView = isWebsiteDevice(d) ? 'websites' : 'devices'"
                     class="p-2.5 rounded bg-rose-500/5 border border-rose-500/20 hover:border-rose-500/50 cursor-pointer transition-colors flex items-center justify-between text-xs"
                   >
                     <div class="flex flex-col gap-0.5">
@@ -351,22 +344,22 @@
 
         <!-- VIEW 2: Devices (Nodes & Device Inventory) -->
         <template v-else-if="currentView === 'devices'">
-          <!-- Host & Storage KPI Cards -->
+          <!-- Host & Storage KPI Cards (Hardware / Server Nodes Only) -->
           <HostCards 
-            :hosts="devices"
+            :hosts="nodeDevices"
             :gateway="gateway"
             @open-discovery="isDiscoveryOpen = true"
             @open-add-device="openAddDeviceModal"
           />
 
-          <!-- Dense Monitored Devices Grid -->
+          <!-- Dense Monitored Devices Grid (Hardware & Network Nodes Only) -->
           <DeviceTable 
-            :devices="devices"
+            :devices="nodeDevices"
             :selectedDeviceId="selectedDevice?.id"
             :searchQuery="searchQuery"
+            :isWebsiteView="false"
             @select-device="selectDevice"
             @open-add-device="openAddDeviceModal"
-            @open-add-website="openAddWebsiteModal"
             @open-discovery="isDiscoveryOpen = true"
             @edit-device="editDevice"
             @delete-device="deleteDevice"
@@ -441,10 +434,9 @@
                 :devices="websiteDevices"
                 :selectedDeviceId="selectedDevice?.id"
                 :searchQuery="searchQuery"
+                :isWebsiteView="true"
                 @select-device="selectDevice"
-                @open-add-device="openAddWebsiteModal"
                 @open-add-website="openAddWebsiteModal"
-                @open-discovery="isDiscoveryOpen = true"
                 @edit-device="editDevice"
                 @delete-device="deleteDevice"
               />
@@ -748,13 +740,20 @@ const modalInitialType = ref('linux')
 
 let pollTimer = null
 
-// Filtered Website devices (HTTP / HTTPS endpoints)
+const isWebsiteDevice = (d) => {
+  if (!d) return false
+  const t = (d.device_type || '').toLowerCase()
+  return t === 'website' || t === 'web' || (d.ip_address && (d.ip_address.startsWith('http://') || d.ip_address.startsWith('https://')))
+}
+
+// Filtered Hardware / Server / Network Nodes (Excludes Websites)
+const nodeDevices = computed(() => {
+  return devices.value.filter(d => !isWebsiteDevice(d))
+})
+
+// Filtered Website devices (HTTP / HTTPS endpoints only)
 const websiteDevices = computed(() => {
-  return devices.value.filter(d => 
-    (d.device_type || '').toLowerCase() === 'website' || 
-    (d.device_type || '').toLowerCase() === 'web' ||
-    (d.ip_address && (d.ip_address.startsWith('http://') || d.ip_address.startsWith('https://')))
-  )
+  return devices.value.filter(d => isWebsiteDevice(d))
 })
 
 // Filtered NAS / Storage devices
@@ -767,7 +766,7 @@ const deviceTypeCounts = computed(() => {
   const counts = { linux: 0, windows: 0, esxi: 0, nas: 0, network: 0, website: 0, other: 0 }
   devices.value.forEach(d => {
     const t = (d.device_type || '').toLowerCase()
-    if (t === 'website' || t === 'web' || (d.ip_address && (d.ip_address.startsWith('http://') || d.ip_address.startsWith('https://')))) counts.website++
+    if (isWebsiteDevice(d)) counts.website++
     else if (['linux', 'ubuntu', 'debian'].includes(t)) counts.linux++
     else if (t.includes('win')) counts.windows++
     else if (t === 'esxi') counts.esxi++
