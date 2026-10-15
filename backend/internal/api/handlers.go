@@ -118,6 +118,8 @@ func GetDevices(c *gin.Context) {
 			d.location, d.operator_notes, d.is_agent_installed, d.agent_token, d.monitoring_profile, 
 			d.check_interval_seconds, d.status, d.last_seen_at, d.last_status_change_at, 
 			d.response_time_ms, d.created_at, d.updated_at,
+			d.agent_version, d.agent_upgrade_status, d.agent_upgrade_target, d.agent_upgrade_error,
+			d.agent_last_upgrade_at, d.machine_uuid,
 			m.cpu_usage_pct, m.ram_usage_pct, m.disk_usage_pct, m.temperature_celsius,
 			m.net_rx_kbps, m.net_tx_kbps
 		FROM devices d
@@ -143,12 +145,14 @@ func GetDevices(c *gin.Context) {
 	for rows.Next() {
 		var d models.Device
 		var mac, osVer, purp, loc, notes, token sql.NullString
-		var lastSeen sql.NullTime
+		var agentVer, upgStatus, upgTarget, upgErr, machUUID sql.NullString
+		var lastSeen, lastUpgrade sql.NullTime
 		var cpu, ram, disk, temp, netRx, netTx sql.NullFloat64
 
 		if err := rows.Scan(&d.ID, &d.Name, &d.IPAddress, &mac, &d.DeviceType, &osVer, &purp, &loc, &notes,
 			&d.IsAgentInstalled, &token, &d.MonitoringProfile, &d.CheckIntervalSeconds, &d.Status,
 			&lastSeen, &d.LastStatusChangeAt, &d.ResponseTimeMS, &d.CreatedAt, &d.UpdatedAt,
+			&agentVer, &upgStatus, &upgTarget, &upgErr, &lastUpgrade, &machUUID,
 			&cpu, &ram, &disk, &temp, &netRx, &netTx); err == nil {
 			if mac.Valid {
 				d.MACAddress = mac.String
@@ -170,6 +174,24 @@ func GetDevices(c *gin.Context) {
 			}
 			if lastSeen.Valid {
 				d.LastSeenAt = &lastSeen.Time
+			}
+			if agentVer.Valid {
+				d.AgentVersion = agentVer.String
+			}
+			if upgStatus.Valid {
+				d.AgentUpgradeStatus = upgStatus.String
+			}
+			if upgTarget.Valid {
+				d.AgentUpgradeTarget = upgTarget.String
+			}
+			if upgErr.Valid {
+				d.AgentUpgradeError = upgErr.String
+			}
+			if lastUpgrade.Valid {
+				d.AgentLastUpgradeAt = &lastUpgrade.Time
+			}
+			if machUUID.Valid {
+				d.MachineUUID = machUUID.String
 			}
 
 			if cpu.Valid {
@@ -768,6 +790,103 @@ func TestAlert(c *gin.Context) {
 	}
 }
 
+// AgentEnroll handles Wazuh-style zero-touch agent enrollment
+func AgentEnroll(c *gin.Context) {
+	if database.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Veritabanı hazır değil"})
+		return
+	}
+
+	var req models.AgentEnrollRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz kayıt verisi: " + err.Error()})
+		return
+	}
+
+	clientIP := c.ClientIP()
+	targetIP := req.LocalIP
+	if targetIP == "" || targetIP == "127.0.0.1" || strings.HasPrefix(targetIP, "127.") || targetIP == "::1" {
+		targetIP = clientIP
+	}
+
+	tokenBytes := make([]byte, 32)
+	_, _ = rand.Read(tokenBytes)
+	agentToken := hex.EncodeToString(tokenBytes)
+
+	name := req.Hostname
+	if name == "" {
+		name = "Agent-" + targetIP
+	}
+
+	devType := "linux"
+	if strings.Contains(strings.ToLower(req.OSName), "windows") {
+		devType = "windows"
+	}
+
+	agentVer := req.AgentVersion
+	if agentVer == "" {
+		agentVer = "0.4.0"
+	}
+
+	// 1. Check if device already exists by machine_uuid or ip_address
+	var devID int
+	var existingName string
+
+	if req.MachineUUID != "" {
+		_ = database.DB.QueryRow(`
+			SELECT id, name FROM devices WHERE machine_uuid = $1
+		`, req.MachineUUID).Scan(&devID, &existingName)
+	}
+
+	if devID == 0 {
+		_ = database.DB.QueryRow(`
+			SELECT id, name FROM devices WHERE ip_address = $1
+		`, targetIP).Scan(&devID, &existingName)
+	}
+
+	if devID > 0 {
+		// Existing device enrolled!
+		_, _ = database.DB.Exec(`
+			UPDATE devices 
+			SET agent_token = $1,
+			    is_agent_installed = 1,
+			    agent_version = $2,
+			    machine_uuid = COALESCE(NULLIF($3, ''), machine_uuid),
+			    mac_address = COALESCE(NULLIF($4, ''), mac_address),
+			    os_version = $5,
+			    device_type = $6,
+			    status = 'online',
+			    last_seen_at = CURRENT_TIMESTAMP,
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE id = $7
+		`, agentToken, agentVer, req.MachineUUID, req.MACAddress, req.OSName+" "+req.OSVersion, devType, devID)
+
+		incident.DispatchAlert(existingName, targetIP, "AJAN OTOMATİK BAĞLANDI", fmt.Sprintf("Kayıtlı cihaz '%s' yeni ajan anahtarı (v%s) ile otomatik tescil edildi.", existingName, agentVer))
+	} else {
+		// New device created via Auto-Enrollment!
+		res, insErr := database.DB.Exec(`
+			INSERT INTO devices (name, ip_address, mac_address, device_type, os_version, is_agent_installed, agent_token, agent_version, machine_uuid, status, last_seen_at)
+			VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, 'online', CURRENT_TIMESTAMP)
+		`, name, targetIP, req.MACAddress, devType, req.OSName+" "+req.OSVersion, agentToken, agentVer, req.MachineUUID)
+		if insErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ajan kaydedilemedi: " + insErr.Error()})
+			return
+		}
+		id64, _ := res.LastInsertId()
+		devID = int(id64)
+
+		incident.DispatchAlert(name, targetIP, "YENİ AJAN OTOMATİK KAYIT (AUTO-ENROLL)", fmt.Sprintf("Yeni %s sunucusu (%s - v%s) sıfır-dokunuş (zero-touch) ile sisteme kaydedildi.", req.OSName, targetIP, agentVer))
+	}
+
+	c.JSON(http.StatusOK, models.AgentEnrollResponse{
+		Status:               "enrolled",
+		Token:                agentToken,
+		DeviceID:             devID,
+		CheckIntervalSeconds: 15,
+		ServerVersion:        "0.4.0",
+	})
+}
+
 // AgentHeartbeat receives periodic telemetry and graceful shutdown events from Windows/Ubuntu agents
 func AgentHeartbeat(c *gin.Context) {
 	var report models.AgentReport
@@ -776,13 +895,28 @@ func AgentHeartbeat(c *gin.Context) {
 		return
 	}
 
+	token := c.GetHeader("X-Agent-Token")
+	if token == "" {
+		token = report.Token
+	}
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Agent token eksik"})
+		return
+	}
+
 	var devID int
 	var devName string
+	var devType string
+	var upgStatus string
+	var upgTarget string
 	err := database.DB.QueryRow(`
-		SELECT id, name FROM devices WHERE agent_token = $1
-	`, report.Token).Scan(&devID, &devName)
+		SELECT id, name, device_type, COALESCE(agent_upgrade_status, 'none'), COALESCE(agent_upgrade_target, '')
+		FROM devices 
+		WHERE agent_token = $1
+	`, token).Scan(&devID, &devName, &devType, &upgStatus, &upgTarget)
 
 	if err != nil {
+		// Device not found with this token -> fallback match by IP or suggest enrollment
 		clientIP := c.ClientIP()
 		targetIP := report.LocalIP
 		if targetIP == "" || targetIP == "127.0.0.1" || strings.HasPrefix(targetIP, "127.") || targetIP == "::1" {
@@ -802,25 +936,25 @@ func AgentHeartbeat(c *gin.Context) {
 				UPDATE devices 
 				SET agent_token = $1, is_agent_installed = 1, status = 'online', last_seen_at = CURRENT_TIMESTAMP 
 				WHERE id = $2
-			`, report.Token, devID)
+			`, token, devID)
 		} else {
 			name := report.Hostname
 			if name == "" {
 				name = "Agent-" + targetIP
 			}
-			devType := "linux"
+			dtype := "linux"
 			if strings.Contains(strings.ToLower(report.OSName), "windows") {
-				devType = "windows"
+				dtype = "windows"
 			}
 			res, insErr := database.DB.Exec(`
-				INSERT INTO devices (name, ip_address, device_type, os_version, is_agent_installed, agent_token, status, last_seen_at)
-				VALUES ($1, $2, $3, $4, 1, $5, 'online', CURRENT_TIMESTAMP)
+				INSERT INTO devices (name, ip_address, device_type, os_version, is_agent_installed, agent_token, agent_version, machine_uuid, status, last_seen_at)
+				VALUES ($1, $2, $3, $4, 1, $5, $6, $7, 'online', CURRENT_TIMESTAMP)
 				ON CONFLICT (ip_address) DO UPDATE SET
 					agent_token = EXCLUDED.agent_token,
 					is_agent_installed = 1,
 					status = 'online',
 					last_seen_at = CURRENT_TIMESTAMP
-			`, name, targetIP, devType, report.OSName+" "+report.OSVersion, report.Token)
+			`, name, targetIP, dtype, report.OSName+" "+report.OSVersion, token, report.AgentVersion, report.MachineUUID)
 			if insErr != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ajan yetkilendirilemedi: " + insErr.Error()})
 				return
@@ -828,11 +962,9 @@ func AgentHeartbeat(c *gin.Context) {
 			id64, _ := res.LastInsertId()
 			devID = int(id64)
 			devName = name
-
 			if devID <= 0 {
 				_ = database.DB.QueryRow("SELECT id FROM devices WHERE ip_address = $1", targetIP).Scan(&devID)
 			}
-			incident.DispatchAlert(devName, targetIP, "YENİ AJAN AKTİF", fmt.Sprintf("Yeni %s ajanı başarıyla sisteme bağlandı ve telemetri göndermeye başladı.", report.OSName))
 		}
 	}
 
@@ -857,20 +989,47 @@ func AgentHeartbeat(c *gin.Context) {
 
 		incident.DispatchAlert(devName, report.LocalIP, "PLANLI KAPATMA / YENİDEN BAŞLATMA", "Ajan işletim sistemi temiz kapanma bildirimi iletti: "+reason)
 
-		c.JSON(http.StatusOK, gin.H{"status": "ack_shutdown"})
+		c.JSON(http.StatusOK, models.AgentUpgradeInstruction{Status: "ack_shutdown", Action: "none"})
 		return
 	}
 
+	// Handle agent upgrade feedback
+	if report.UpgradeStatus != "" {
+		if report.UpgradeStatus == "success" {
+			_, _ = database.DB.Exec(`
+				UPDATE devices 
+				SET agent_upgrade_status = 'success',
+				    agent_upgrade_error = '',
+				    agent_last_upgrade_at = CURRENT_TIMESTAMP,
+				    agent_version = COALESCE(NULLIF($1, ''), agent_version)
+				WHERE id = $2
+			`, report.AgentVersion, devID)
+			incident.DispatchAlert(devName, report.LocalIP, "AJAN BAŞARIYLA GÜNCELLENDİ", fmt.Sprintf("Ajan başarıyla v%s sürümüne yükseltildi.", report.AgentVersion))
+		} else {
+			_, _ = database.DB.Exec(`
+				UPDATE devices 
+				SET agent_upgrade_status = $1,
+				    agent_upgrade_error = $2
+				WHERE id = $3
+			`, report.UpgradeStatus, report.UpgradeError, devID)
+		}
+	}
+
 	// Normal heartbeat update
+	agentVer := report.AgentVersion
+	if agentVer == "" {
+		agentVer = "0.4.0"
+	}
 	_, _ = database.DB.Exec(`
 		UPDATE devices 
 		SET status = 'online',
 		    is_agent_installed = 1,
-		    os_version = COALESCE(NULLIF($1, ''), os_version),
+		    agent_version = $1,
+		    os_version = COALESCE(NULLIF($2, ''), os_version),
 		    last_seen_at = CURRENT_TIMESTAMP,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $2
-	`, report.OSName+" "+report.OSVersion, devID)
+		WHERE id = $3
+	`, agentVer, report.OSName+" "+report.OSVersion, devID)
 
 	// Save telemetry metrics
 	_, _ = database.DB.Exec(`
@@ -878,50 +1037,154 @@ func AgentHeartbeat(c *gin.Context) {
 		VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
 	`, devID, report.CPUUsagePct, report.RAMUsagePct, report.DiskUsagePct, report.TempCelsius, report.NetRxKBps, report.NetTxKBps)
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	// Check if this device has a pending upgrade instruction!
+	if upgStatus == "pending" {
+		platform := "linux"
+		if devType == "windows" || strings.Contains(strings.ToLower(report.OSName), "windows") {
+			platform = "windows"
+		}
+
+		targetVer := upgTarget
+		if targetVer == "" {
+			targetVer = "0.4.0"
+		}
+
+		checksum := getBinaryChecksum(platform)
+
+		c.JSON(http.StatusOK, models.AgentUpgradeInstruction{
+			Status:        "ok",
+			Action:        "upgrade",
+			TargetVersion: targetVer,
+			DownloadURL:   fmt.Sprintf("/api/agent/download/%s", platform),
+			SHA256:        checksum,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.AgentUpgradeInstruction{
+		Status: "ok",
+		Action: "none",
+	})
 }
 
-func getServices(devID int) []models.ServiceMonitored {
-	var list []models.ServiceMonitored
-	rows, err := database.DB.Query(`
-		SELECT id, device_id, name, check_type, target_port, target_path, expected_status_code, status, response_time_ms, last_check_at, created_at
-		FROM services_monitored WHERE device_id = $1
-	`, devID)
-	if err != nil {
-		return list
+// TriggerAgentUpgrade queues an upgrade instruction for a single device
+func TriggerAgentUpgrade(c *gin.Context) {
+	if database.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Veritabanı hazır değil"})
+		return
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var s models.ServiceMonitored
-		var targetPath sql.NullString
-		var lastCheck sql.NullTime
-		if err := rows.Scan(&s.ID, &s.DeviceID, &s.Name, &s.CheckType, &s.TargetPort, &targetPath,
-			&s.ExpectedStatusCode, &s.Status, &s.ResponseTimeMS, &lastCheck, &s.CreatedAt); err == nil {
-			if targetPath.Valid {
-				s.TargetPath = targetPath.String
-			}
-			if lastCheck.Valid {
-				s.LastCheckAt = &lastCheck.Time
-			}
-			list = append(list, s)
+	id := c.Param("id")
+	var targetVersion string
+	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&targetVersion)
+	if targetVersion == "" {
+		targetVersion = "0.4.0"
+	}
+
+	res, err := database.DB.Exec(`
+		UPDATE devices 
+		SET agent_upgrade_status = 'pending',
+		    agent_upgrade_target = $1,
+		    agent_upgrade_error = ''
+		WHERE id = $2 AND is_agent_installed = 1
+	`, targetVersion, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cihaz bulunamadı veya üzerinde ajan kurulu değil"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "Ajan güncelleme talimatı kuyruğa alındı. Bir sonraki heartbeat döngüsünde uygulanacaktır.",
+		"target_version": targetVersion,
+	})
+}
+
+// TriggerAllAgentsUpgrade queues upgrade instructions for all devices with agents
+func TriggerAllAgentsUpgrade(c *gin.Context) {
+	if database.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Veritabanı hazır değil"})
+		return
+	}
+
+	var targetVersion string
+	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&targetVersion)
+	if targetVersion == "" {
+		targetVersion = "0.4.0"
+	}
+
+	res, err := database.DB.Exec(`
+		UPDATE devices 
+		SET agent_upgrade_status = 'pending',
+		    agent_upgrade_target = $1,
+		    agent_upgrade_error = ''
+		WHERE is_agent_installed = 1
+	`, targetVersion)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	count, _ := res.RowsAffected()
+	c.JSON(http.StatusOK, gin.H{
+		"message":        fmt.Sprintf("%d adet ajana uzaktan güncelleme talimatı iletildi.", count),
+		"queued_count":   count,
+		"target_version": targetVersion,
+	})
+}
+
+// GetAgentVersions returns information about available agent binaries and checksums
+func GetAgentVersions(c *gin.Context) {
+	var latestVersion string
+	if database.DB != nil {
+		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&latestVersion)
+	}
+	if latestVersion == "" {
+		latestVersion = "0.4.0"
+	}
+
+	winHash := getBinaryChecksum("windows")
+	linuxHash := getBinaryChecksum("linux")
+
+	c.JSON(http.StatusOK, gin.H{
+		"latest_version":   latestVersion,
+		"sha256_windows":   winHash,
+		"sha256_linux":     linuxHash,
+		"download_windows": "/api/agent/download/windows",
+		"download_linux":   "/api/agent/download/linux",
+	})
+}
+
+func getBinaryChecksum(platform string) string {
+	var filename string
+	if platform == "windows" {
+		filename = "gnnwatchtower-agent.exe"
+	} else {
+		filename = "gnnwatchtower-agent"
+	}
+
+	paths := []string{
+		"/opt/gnnwatchtower/bin/" + filename,
+		"./bin/" + filename,
+		filename,
+	}
+
+	for _, p := range paths {
+		if data, err := os.ReadFile(p); err == nil && len(data) > 10000 {
+			h := sha256.Sum256(data)
+			return hex.EncodeToString(h[:])
 		}
 	}
-	return list
+	return ""
 }
 
 // GenerateLinuxAgentScript outputs bash script for 1-click curl install on Ubuntu/Debian
 func GenerateLinuxAgentScript(c *gin.Context) {
-	token := c.Query("token")
-	if token == "" {
-		bytes := make([]byte, 16)
-		if _, err := rand.Read(bytes); err == nil {
-			token = hex.EncodeToString(bytes)
-		} else {
-			token = fmt.Sprintf("agent-%d", time.Now().UnixNano())
-		}
-	}
-
 	host := c.Request.Host
 	scheme := "http"
 	if c.Request.TLS != nil {
@@ -930,73 +1193,57 @@ func GenerateLinuxAgentScript(c *gin.Context) {
 	serverURL := fmt.Sprintf("%s://%s", scheme, host)
 
 	script := fmt.Sprintf(`#!/usr/bin/env bash
-set -e
+# ==============================================================================
+# GNNwatchtower Telemetry Agent Installer (Linux / Ubuntu / Debian)
+# Enterprise Zero-Touch Auto-Enrollment
+# ==============================================================================
+set -euo pipefail
 
-echo "[GNNwatchtower] Ajan kurulumu baslatiliyor..."
 SERVER_URL="%s"
-TOKEN="%s"
 INSTALL_DIR="/opt/gnnwatchtower-agent"
+BIN_TARGET="$INSTALL_DIR/gnnwatchtower-agent"
 
-# Calisan eski ajani durdur (Text file busy ve curl 23 yazma hatasini onler)
-systemctl stop gnnwatchtower-agent.service 2>/dev/null || true
-pkill -9 -f gnnwatchtower-agent 2>/dev/null || true
-sleep 1
+echo "[GNNwatchtower] Kurumsal Linux Ajan kurulumu baslatiliyor..."
+
+# Root kontrolu
+if [ "$EUID" -ne 0 ]; then
+    echo "[HATA] Lutfen kurulumu root veya 'sudo' ile calistiriniz."
+    exit 1
+fi
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
+# Eski calisan ajani durdur
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop gnnwatchtower-agent.service 2>/dev/null || true
+fi
+pkill -9 -f gnnwatchtower-agent 2>/dev/null || true
+sleep 1
+
 echo "[GNNwatchtower] Ajan ikili dosyasi indiriliyor..."
-rm -f "$INSTALL_DIR/gnnwatchtower-agent.tmp"
-if ! curl -fsSL "$SERVER_URL/api/agent/download/linux" -o "$INSTALL_DIR/gnnwatchtower-agent.tmp"; then
-    echo "[HATA] Ajan ikili dosyasi sunucudan indirilemedi! Lutfen sunucuda 'update.sh' calistirildigindan emin olunuz."
+rm -f "$BIN_TARGET.tmp"
+if ! curl -fsSL "$SERVER_URL/api/agent/download/linux" -o "$BIN_TARGET.tmp"; then
+    echo "[HATA] Ajan dosyasi sunucudan indirilemedi! Lutfen sunucu erisimini kontrol ediniz."
     exit 1
 fi
 
-chmod +x "$INSTALL_DIR/gnnwatchtower-agent.tmp"
-mv -f "$INSTALL_DIR/gnnwatchtower-agent.tmp" "$INSTALL_DIR/gnnwatchtower-agent"
+chmod 755 "$BIN_TARGET.tmp"
+mv -f "$BIN_TARGET.tmp" "$BIN_TARGET"
 
-echo "[GNNwatchtower] Systemd servisi yapilandiriliyor..."
-cat <<EOF > /etc/systemd/system/gnnwatchtower-agent.service
-[Unit]
-Description=GNNwatchtower Mini-Agent
-After=network.target
+echo "[GNNwatchtower] Sistem servisi yapilandiriliyor ve baslatiliyor..."
+"$BIN_TARGET" -service install -server "$SERVER_URL"
+"$BIN_TARGET" -service start
 
-[Service]
-Type=simple
-ExecStart=$INSTALL_DIR/gnnwatchtower-agent -server $SERVER_URL -token $TOKEN
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable gnnwatchtower-agent.service
-systemctl restart gnnwatchtower-agent.service
-
-echo "[GNNwatchtower] Ajan basariyla kuruldu ve arka planda calisiyor!"
-systemctl status gnnwatchtower-agent.service --no-pager
-`, serverURL, token)
+echo "[GNNwatchtower] Ajan basariyla kuruldu, otomatik olarak kaydoldu (Auto-Enrollment) ve aktif calisiyor!"
+`, serverURL)
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 	c.String(http.StatusOK, script)
 }
 
-// GenerateWindowsAgentScript outputs powershell script for 1-click install on Windows Server
+// GenerateWindowsAgentScript outputs enterprise powershell script for Windows Server
 func GenerateWindowsAgentScript(c *gin.Context) {
-	token := c.Query("token")
-	if token == "" {
-		bytes := make([]byte, 16)
-		if _, err := rand.Read(bytes); err == nil {
-			token = hex.EncodeToString(bytes)
-		} else {
-			token = fmt.Sprintf("agent-%d", time.Now().UnixNano())
-		}
-	}
-
 	host := c.Request.Host
 	scheme := "http"
 	if c.Request.TLS != nil {
@@ -1005,21 +1252,27 @@ func GenerateWindowsAgentScript(c *gin.Context) {
 	serverURL := fmt.Sprintf("%s://%s", scheme, host)
 
 	ps1 := fmt.Sprintf(`$ErrorActionPreference = "Stop"
+
+# Administrator yetki kontrolu
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host "[HATA] Windows Ajan kurulumu Yonetici olarak calistirilmalidir (Run PowerShell as Administrator)!" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "[GNNwatchtower] Windows Ajan kurulumu baslatiliyor..." -ForegroundColor Cyan
+Write-Host "[GNNwatchtower] Windows Kurumsal Ajan kurulumu baslatiliyor..." -ForegroundColor Cyan
 
 $serverUrl = "%s"
-$token = "%s"
 $installDir = "C:\Program Files\GNNwatchtower-Agent"
-$taskName = "GNNwatchtowerAgent"
+$agentExe = "$installDir\gnnwatchtower-agent.exe"
+$agentTmp = "$installDir\gnnwatchtower-agent.tmp"
 
-# Calisan eski ajani ve gorevi durdur
-Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+# Calisan eski ajani durdur
+try {
+    if (Test-Path $agentExe) {
+        & "$agentExe" -service stop 2>$null
+    }
+} catch {}
 Stop-Process -Name "gnnwatchtower-agent" -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
@@ -1027,37 +1280,37 @@ if (!(Test-Path -Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 }
 
-$agentExe = "$installDir\gnnwatchtower-agent.exe"
-$agentTmp = "$installDir\gnnwatchtower-agent.tmp"
-
-Write-Host "[GNNwatchtower] Ajan indiriliyor..."
+Write-Host "[GNNwatchtower] Ajan ikili dosyasi indiriliyor..."
 try {
     Invoke-WebRequest -Uri "$serverUrl/api/agent/download/windows" -OutFile $agentTmp -UseBasicParsing
 } catch {
-    Write-Host "[HATA] Windows Ajan ikili dosyasi indirilemedi! Lutfen sunucuda 'update.sh' calistirildigindan emin olunuz." -ForegroundColor Red
+    Write-Host "[HATA] Windows Ajan ikili dosyasi indirilemedi! Lutfen sunucu erisimini kontrol ediniz." -ForegroundColor Red
     exit 1
 }
 
 if ((Get-Item $agentTmp).Length -lt 50000) {
     Remove-Item $agentTmp -Force -ErrorAction SilentlyContinue
-    Write-Host "[HATA] Indirilen dosya boyutu gecersiz. Lutfen sunucuda 'update.sh' calistiriniz." -ForegroundColor Red
+    Write-Host "[HATA] Indirilen dosya boyutu gecersiz." -ForegroundColor Red
     exit 1
 }
 
 Move-Item -Path $agentTmp -Destination $agentExe -Force
 
-Write-Host "[GNNwatchtower] Servis zamanlanmis gorev olarak olusturuluyor..."
-$taskName = "GNNwatchtowerAgent"
-$action = New-ScheduledTaskAction -Execute $agentExe -Argument "-server $serverUrl -token $token"
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
+Write-Host "[GNNwatchtower] Yerel Windows Hizmeti tescil ediliyor..."
+try {
+    & "$agentExe" -service install -server "$serverUrl"
+} catch {
+    Write-Host "[BILGI] Servis zaten kurulu veya tescil edildi, baslatiliyor..." -ForegroundColor Yellow
+}
 
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User "NT AUTHORITY\SYSTEM" -RunLevel Highest | Out-Null
-Start-ScheduledTask -TaskName $taskName
+try {
+    & "$agentExe" -service start
+} catch {
+    Start-Service -Name "GNNwatchtowerAgent" -ErrorAction SilentlyContinue
+}
 
-Write-Host "[GNNwatchtower] Windows Ajan basariyla kuruldu ve baslatildi!" -ForegroundColor Green
-`, serverURL, token)
+Write-Host "[GNNwatchtower] Windows Ajan basariyla kuruldu, otomatik olarak kaydoldu (Auto-Enrollment) ve baslatildi!" -ForegroundColor Green
+`, serverURL)
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 	c.String(http.StatusOK, ps1)

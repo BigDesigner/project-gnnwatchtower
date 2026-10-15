@@ -29,11 +29,12 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "healthy",
 				"service": "gnnwatchtower",
-				"version": "0.3.2",
+				"version": "0.4.0",
 				"port":    3800,
 			})
 		})
 		api.POST("/auth/login", Login)
+		api.POST("/agent/enroll", AgentEnroll)
 		api.POST("/agent/report", AgentHeartbeat)
 		api.GET("/agent/install/linux", GenerateLinuxAgentScript)
 		api.GET("/agent/install/windows", GenerateWindowsAgentScript)
@@ -45,6 +46,11 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 		{
 			protected.POST("/auth/change-password", ChangePassword)
 			protected.GET("/dashboard/stats", GetDashboardStats)
+
+			// Agent Remote Upgrade Orchestration
+			protected.POST("/agent/:id/upgrade", TriggerAgentUpgrade)
+			protected.POST("/agent/upgrade-all", TriggerAllAgentsUpgrade)
+			protected.GET("/agent/versions", GetAgentVersions)
 
 			// Devices
 			protected.GET("/devices", GetDevices)

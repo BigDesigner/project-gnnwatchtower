@@ -139,5 +139,19 @@ export default {
   async getWindowsAgentScript() {
     const res = await client.get('/agent/install/windows')
     return res.data
+  },
+
+  // Agent Remote Upgrade Orchestration
+  async upgradeAgent(deviceId) {
+    const res = await client.post(`/agent/${deviceId}/upgrade`)
+    return res.data
+  },
+  async upgradeAllAgents() {
+    const res = await client.post('/agent/upgrade-all')
+    return res.data
+  },
+  async getAgentVersions() {
+    const res = await client.get('/agent/versions')
+    return res.data
   }
 }

@@ -227,9 +227,19 @@
                       :class="getStatusDotClass(device.status)"
                     ></span>
                     <div class="flex flex-col">
-                      <span class="font-medium text-txt-primary group-hover:text-blue-400 transition-colors">
-                        {{ device.name }}
-                      </span>
+                      <div class="flex items-center gap-1.5">
+                        <span class="font-medium text-txt-primary group-hover:text-blue-400 transition-colors">
+                          {{ device.name }}
+                        </span>
+                        <span 
+                          v-if="device.is_agent_installed" 
+                          class="px-1.5 py-0.2 rounded text-[10px] font-mono border"
+                          :class="getAgentBadgeClass(device)"
+                          :title="getAgentBadgeTitle(device)"
+                        >
+                          v{{ device.agent_version || '0.4.0' }}
+                        </span>
+                      </div>
                       <span v-if="device.purpose" class="text-[11px] text-txt-muted truncate max-w-[180px]">
                         {{ device.purpose }}
                       </span>
@@ -328,6 +338,14 @@
                 <td class="py-3 px-4 text-right" @click.stop>
                   <div class="flex items-center justify-end gap-1">
                     <button 
+                      v-if="device.is_agent_installed"
+                      @click="$emit('upgrade-agent', device)" 
+                      title="Ajanı Uzaktan Güncelle (v0.4.0)"
+                      class="p-1 rounded hover:bg-[#232936] text-txt-muted hover:text-emerald-400 transition-colors"
+                    >
+                      <span class="material-symbols-outlined text-[16px]">system_update_alt</span>
+                    </button>
+                    <button 
                       @click="$emit('select-device', device)" 
                       title="Telemetri İncele"
                       class="p-1 rounded hover:bg-[#232936] text-txt-muted hover:text-blue-400 transition-colors"
@@ -405,7 +423,8 @@ defineEmits([
   'open-add-website',
   'open-discovery', 
   'edit-device', 
-  'delete-device'
+  'delete-device',
+  'upgrade-agent'
 ])
 
 const activeTab = ref('all')
@@ -537,6 +556,27 @@ const getWebsiteStatusBadgeClass = (device) => {
     return 'bg-rose-500/10 text-rose-400 border-rose-500/20'
   }
   return 'bg-[#181e28] text-txt-secondary border-[#232936]'
+}
+
+const getAgentBadgeClass = (device) => {
+  if (device.agent_upgrade_status === 'pending') {
+    return 'bg-amber-950/40 text-amber-400 border-amber-800/40'
+  }
+  if (device.agent_upgrade_status === 'downloading' || device.agent_upgrade_status === 'applying') {
+    return 'bg-sky-950/40 text-sky-400 border-sky-800/40 animate-pulse'
+  }
+  if (device.agent_upgrade_status === 'failed') {
+    return 'bg-rose-950/40 text-rose-400 border-rose-800/40'
+  }
+  return 'bg-emerald-950/30 text-emerald-400 border-emerald-800/30'
+}
+
+const getAgentBadgeTitle = (device) => {
+  if (device.agent_upgrade_status === 'pending') return 'Uzaktan güncelleme talimatı bekliyor'
+  if (device.agent_upgrade_status === 'downloading') return 'Yeni ikili dosya indiriliyor...'
+  if (device.agent_upgrade_status === 'applying') return 'Ajan servisi yeniden başlatılıyor...'
+  if (device.agent_upgrade_status === 'failed') return `Güncelleme hatası: ${device.agent_upgrade_error || 'Bilinmiyor'}`
+  return `Kurumsal Ajan Aktif (v${device.agent_version || '0.4.0'})`
 }
 
 const formatLastSeen = (timestamp) => {

@@ -363,6 +363,7 @@
             @open-discovery="isDiscoveryOpen = true"
             @edit-device="editDevice"
             @delete-device="deleteDevice"
+            @upgrade-agent="handleUpgradeAgent"
           />
 
           <!-- Bottom Telemetry & Real Incident Inspector -->
@@ -871,6 +872,18 @@ const deleteDevice = async (id) => {
     } catch (err) {
       alert('Silme hatası: ' + (err.response?.data?.error || err.message))
     }
+  }
+}
+
+const handleUpgradeAgent = async (device) => {
+  if (!device || !device.id) return
+  if (!confirm(`'${device.name}' üzerindeki GNNwatchtower ajanına uzaktan v0.4.0 güncelleme talimatı göndermek istiyor musunuz?`)) return
+  try {
+    const res = await api.upgradeAgent(device.id)
+    device.agent_upgrade_status = 'pending'
+    alert(res.message || 'Güncelleme talimatı başarıyla kuyruğa alındı.')
+  } catch (err) {
+    alert('Güncelleme hatası: ' + (err.response?.data?.error || err.message))
   }
 }
 

@@ -26,6 +26,13 @@ type Device struct {
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 
+	AgentVersion         string     `json:"agent_version,omitempty"`
+	AgentUpgradeStatus   string     `json:"agent_upgrade_status,omitempty"` // none, pending, downloading, verifying, applying, failed, success
+	AgentUpgradeTarget   string     `json:"agent_upgrade_target,omitempty"`
+	AgentUpgradeError    string     `json:"agent_upgrade_error,omitempty"`
+	AgentLastUpgradeAt   *time.Time `json:"agent_last_upgrade_at,omitempty"`
+	MachineUUID          string     `json:"machine_uuid,omitempty"`
+
 	LatestCPU   *float64 `json:"latest_cpu,omitempty"`
 	LatestRAM   *float64 `json:"latest_ram,omitempty"`
 	LatestDisk  *float64 `json:"latest_disk,omitempty"`
@@ -104,8 +111,14 @@ type AgentReport struct {
 	Token          string          `json:"token"`
 	Hostname       string          `json:"hostname"`
 	LocalIP        string          `json:"local_ip"`
+	MACAddress     string          `json:"mac_address,omitempty"`
 	OSName         string          `json:"os_name"`
 	OSVersion      string          `json:"os_version"`
+	Architecture   string          `json:"arch,omitempty"`
+	AgentVersion   string          `json:"agent_version,omitempty"`
+	MachineUUID    string          `json:"machine_uuid,omitempty"`
+	UpgradeStatus  string          `json:"upgrade_status,omitempty"` // downloading, verifying, applying, failed, success
+	UpgradeError   string          `json:"upgrade_error,omitempty"`
 	CPUUsagePct    float64         `json:"cpu_usage_pct"`
 	RAMUsagePct    float64         `json:"ram_usage_pct"`
 	DiskUsagePct   float64         `json:"disk_usage_pct"`
@@ -116,6 +129,36 @@ type AgentReport struct {
 	Services       map[string]bool `json:"services"` // e.g. {"nginx": true, "docker": false}
 	IsShuttingDown bool            `json:"is_shutting_down"`
 	ShutdownReason string          `json:"shutdown_reason"` // graceful_shutdown, reboot, etc.
+}
+
+// AgentEnrollRequest represents Wazuh-style zero-touch agent enrollment
+type AgentEnrollRequest struct {
+	Hostname     string `json:"hostname" binding:"required"`
+	LocalIP      string `json:"local_ip"`
+	MACAddress   string `json:"mac_address"`
+	OSName       string `json:"os_name"`
+	OSVersion    string `json:"os_version"`
+	Architecture string `json:"arch"`
+	MachineUUID  string `json:"machine_uuid"`
+	AgentVersion string `json:"agent_version"`
+}
+
+// AgentEnrollResponse represents enrollment approval and token credentials
+type AgentEnrollResponse struct {
+	Status               string `json:"status"`
+	Token                string `json:"token"`
+	DeviceID             int    `json:"device_id"`
+	CheckIntervalSeconds int    `json:"check_interval_seconds"`
+	ServerVersion        string `json:"server_version"`
+}
+
+// AgentUpgradeInstruction represents command payload sent in heartbeat response
+type AgentUpgradeInstruction struct {
+	Status        string `json:"status"`
+	Action        string `json:"action"` // "upgrade" or "none"
+	TargetVersion string `json:"target_version,omitempty"`
+	DownloadURL   string `json:"download_url,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
 }
 
 // DiscoveryHost represents an auto-discovered network node

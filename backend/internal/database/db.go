@@ -88,6 +88,12 @@ func migrateSchema(db *sql.DB) error {
 		operator_notes TEXT,
 		is_agent_installed INTEGER DEFAULT 0,
 		agent_token TEXT UNIQUE,
+		agent_version TEXT DEFAULT '0.4.0',
+		agent_upgrade_status TEXT DEFAULT 'none',
+		agent_upgrade_target TEXT DEFAULT '',
+		agent_upgrade_error TEXT DEFAULT '',
+		agent_last_upgrade_at DATETIME,
+		machine_uuid TEXT DEFAULT '',
 		monitoring_profile TEXT DEFAULT 'active',
 		check_interval_seconds INTEGER DEFAULT 15,
 		status TEXT DEFAULT 'unknown',
@@ -171,7 +177,10 @@ func migrateSchema(db *sql.DB) error {
 	('brevo_sender_email', 'alerts@gnnwatchtower.local', 'Brevo onaylı gönderici e-posta adresi'),
 	('brevo_sender_name', 'GNNwatchtower Altyapı Bildirimi', 'Brevo gönderici adı'),
 	('brevo_recipient_email', '', 'Bildirimlerin gönderileceği e-posta adresi'),
-	('brevo_enabled', 'false', 'E-posta bildirimleri aktif mi');
+	('brevo_enabled', 'false', 'E-posta bildirimleri aktif mi'),
+	('agent_latest_version', '0.4.0', 'En son derlenmiş resmi GNNwatchtower ajan sürümü'),
+	('agent_sha256_windows', '', 'Windows ajan ikili dosyasının resmi SHA256 özeti'),
+	('agent_sha256_linux', '', 'Linux ajan ikili dosyasının resmi SHA256 özeti');
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -181,6 +190,14 @@ func migrateSchema(db *sql.DB) error {
 	// Idempotent column migrations for existing databases
 	_, _ = db.Exec("ALTER TABLE system_metrics ADD COLUMN net_rx_kbps REAL DEFAULT 0")
 	_, _ = db.Exec("ALTER TABLE system_metrics ADD COLUMN net_tx_kbps REAL DEFAULT 0")
+
+	// Idempotent column migrations for devices
+	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_version TEXT DEFAULT '0.4.0'")
+	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_status TEXT DEFAULT 'none'")
+	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_target TEXT DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_error TEXT DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_last_upgrade_at DATETIME")
+	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN machine_uuid TEXT DEFAULT ''")
 
 	// Create default admin user if no users exist (admin / admin)
 	var count int

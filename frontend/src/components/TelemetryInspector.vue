@@ -20,10 +20,43 @@
       </div>
 
       <div class="flex items-center gap-3 text-xs text-txt-secondary">
-        <span v-if="device && device.is_agent_installed" class="flex items-center gap-1.5 text-emerald-400">
-          <span class="material-symbols-outlined text-[15px]">verified_user</span>
-          <span>Ajan Aktif</span>
-        </span>
+        <template v-if="device && device.is_agent_installed">
+          <span class="flex items-center gap-1.5 text-emerald-400">
+            <span class="material-symbols-outlined text-[15px]">verified_user</span>
+            <span>Ajan v{{ device.agent_version || '0.4.0' }}</span>
+          </span>
+
+          <!-- Upgrade Status Badges -->
+          <span v-if="device.agent_upgrade_status === 'pending'" class="text-amber-400 flex items-center gap-1 font-mono text-[11px] bg-amber-950/40 px-2 py-0.5 rounded border border-amber-800/40">
+            <span class="material-symbols-outlined text-[13px] animate-spin">sync</span>
+            <span>Güncelleme Bekliyor</span>
+          </span>
+          <span v-else-if="device.agent_upgrade_status === 'downloading'" class="text-sky-400 flex items-center gap-1 font-mono text-[11px] bg-sky-950/40 px-2 py-0.5 rounded border border-sky-800/40">
+            <span class="material-symbols-outlined text-[13px] animate-pulse">download</span>
+            <span>İndiriliyor...</span>
+          </span>
+          <span v-else-if="device.agent_upgrade_status === 'applying'" class="text-blue-400 flex items-center gap-1 font-mono text-[11px] bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40">
+            <span class="material-symbols-outlined text-[13px] animate-spin">restart_alt</span>
+            <span>Yeniden Başlatılıyor...</span>
+          </span>
+          <span v-else-if="device.agent_upgrade_status === 'failed'" class="text-rose-400 flex items-center gap-1 text-[11px] bg-rose-950/40 px-2 py-0.5 rounded border border-rose-800/40" :title="device.agent_upgrade_error">
+            <span class="material-symbols-outlined text-[13px]">warning</span>
+            <span>Hata</span>
+          </span>
+
+          <!-- Upgrade Action Button -->
+          <button 
+            v-if="device.agent_upgrade_status !== 'pending' && device.agent_upgrade_status !== 'downloading' && device.agent_upgrade_status !== 'applying'"
+            @click="triggerUpgrade(device.id)"
+            :disabled="isUpgrading"
+            class="px-2 py-0.5 rounded bg-blue-600/80 hover:bg-blue-600 text-white text-[11px] flex items-center gap-1 transition-colors shadow-sm disabled:opacity-50"
+            title="Ajanı uzaktan v0.4.0 sürümüne güncelle"
+          >
+            <span class="material-symbols-outlined text-[13px]">system_update_alt</span>
+            <span>{{ isUpgrading ? 'İletiliyor...' : 'Ajanı Güncelle' }}</span>
+          </button>
+          <span v-if="upgradeMsg" class="text-emerald-400 text-[11px] font-mono">{{ upgradeMsg }}</span>
+        </template>
         <span v-else-if="device" class="flex items-center gap-1.5 text-txt-muted">
           <span class="material-symbols-outlined text-[15px]">info</span>
           <span>ICMP / Port İzleme (Ajan Yok)</span>
@@ -161,7 +194,8 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
+import api from '../services/api'
 
 const props = defineProps({
   device: {
@@ -179,6 +213,26 @@ const props = defineProps({
 })
 
 defineEmits(['open-incidents'])
+
+const isUpgrading = ref(false)
+const upgradeMsg = ref('')
+
+const triggerUpgrade = async (deviceId) => {
+  if (!deviceId) return
+  isUpgrading.value = true
+  try {
+    const res = await api.upgradeAgent(deviceId)
+    upgradeMsg.value = res.message || 'Güncelleme emri iletildi'
+    if (props.device) {
+      props.device.agent_upgrade_status = 'pending'
+    }
+    setTimeout(() => { upgradeMsg.value = '' }, 4000)
+  } catch (err) {
+    alert(err.response?.data?.error || 'Güncelleme başlatılamadı')
+  } finally {
+    isUpgrading.value = false
+  }
+}
 
 const latestMetric = computed(() => {
   if (props.metrics.length === 0) return { cpu: 0, ram: 0, disk: 0, temp: 0 }
