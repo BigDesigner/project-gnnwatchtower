@@ -17,7 +17,7 @@ client.interceptors.request.use(config => {
   return config
 })
 
-// Response interceptor for handling 401 Unauthorized
+// Response interceptor for handling 401 Unauthorized and 403 Forced Password Change
 client.interceptors.response.use(
   response => response,
   error => {
@@ -25,6 +25,8 @@ client.interceptors.response.use(
       // Clear token if invalid or expired
       localStorage.removeItem('gnn_token')
       window.dispatchEvent(new CustomEvent('gnn-auth-failed'))
+    } else if (error.response && error.response.status === 403 && error.response.data?.must_change_password) {
+      window.dispatchEvent(new CustomEvent('gnn-must-change-password'))
     }
     return Promise.reject(error)
   }
@@ -37,6 +39,10 @@ export default {
     if (res.data && res.data.token) {
       localStorage.setItem('gnn_token', res.data.token)
     }
+    return res.data
+  },
+  async getMe() {
+    const res = await client.get('/auth/me')
     return res.data
   },
   async changePassword(currentPassword, newPassword) {

@@ -230,7 +230,16 @@ func migrateSchema(db *sql.DB) error {
 	if count == 0 {
 		hash := HashPassword("admin")
 		_, _ = db.Exec("INSERT INTO users (username, password_hash, role, must_change_password) VALUES ('admin', $1, 'admin', 1)", hash)
-		log.Printf("[GNNwatchtower Auth] Default admin account created (username: admin, password: admin, must_change_password: 1)")
+		log.Println("[GNNwatchtower Auth] Initial admin account initialized. Mandatory password change is ACTIVE.")
+	}
+
+	// Force must_change_password = 1 for admin account if password is still default 'admin'
+	var adminHash string
+	if err := db.QueryRow("SELECT password_hash FROM users WHERE username = 'admin'").Scan(&adminHash); err == nil {
+		if VerifyPassword("admin", adminHash) {
+			_, _ = db.Exec("UPDATE users SET must_change_password = 1 WHERE username = 'admin'")
+			log.Println("[GNNwatchtower Security] Default admin password detected. Mandatory password change is ENFORCED.")
+		}
 	}
 
 	return nil

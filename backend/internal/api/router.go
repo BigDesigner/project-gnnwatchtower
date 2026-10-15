@@ -58,6 +58,7 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 		protected := api.Group("")
 		protected.Use(AuthMiddleware())
 		{
+			protected.GET("/auth/me", GetCurrentUser)
 			protected.POST("/auth/change-password", ChangePassword)
 			protected.GET("/dashboard/stats", GetDashboardStats)
 

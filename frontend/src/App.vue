@@ -690,8 +690,8 @@
     <ChangePasswordModal 
       :isOpen="isChangePasswordOpen"
       :forced="isChangePasswordForced"
-      @close="isChangePasswordOpen = false"
-      @password-changed="isChangePasswordForced = false"
+      @close="handleChangePasswordClose"
+      @password-changed="handlePasswordChanged"
     />
 
     <LoginModal 
@@ -919,13 +919,27 @@ const handleLogout = () => {
   isLoginOpen.value = true
 }
 
+const handleChangePasswordClose = () => {
+  if (isChangePasswordForced.value) {
+    return
+  }
+  isChangePasswordOpen.value = false
+}
+
+const handlePasswordChanged = () => {
+  isChangePasswordForced.value = false
+  isChangePasswordOpen.value = false
+  fetchData()
+}
+
 const handleLoginSuccess = (loginData) => {
   isLoginOpen.value = false
   if (loginData?.must_change_password) {
     isChangePasswordForced.value = true
     isChangePasswordOpen.value = true
+  } else {
+    fetchData()
   }
-  fetchData()
 }
 
 const downloadBackupNow = async () => {
@@ -977,22 +991,45 @@ const formatCause = (cause) => {
   }
 }
 
-onMounted(() => {
-  // Check auth
+onMounted(async () => {
+  // Check auth and session password change requirement
   const token = localStorage.getItem('gnn_token')
   if (!token) {
     isLoginOpen.value = true
   } else {
-    fetchData()
+    try {
+      const me = await api.getMe()
+      if (me.must_change_password) {
+        isChangePasswordForced.value = true
+        isChangePasswordOpen.value = true
+      } else {
+        fetchData()
+      }
+    } catch (err) {
+      if (err.response?.status === 403 && err.response?.data?.must_change_password) {
+        isChangePasswordForced.value = true
+        isChangePasswordOpen.value = true
+      } else if (err.response?.status === 401) {
+        localStorage.removeItem('gnn_token')
+        isLoginOpen.value = true
+      } else {
+        fetchData()
+      }
+    }
   }
 
   window.addEventListener('gnn-auth-failed', () => {
     isLoginOpen.value = true
   })
 
+  window.addEventListener('gnn-must-change-password', () => {
+    isChangePasswordForced.value = true
+    isChangePasswordOpen.value = true
+  })
+
   // Poll real stats every 10 seconds (Zero Placeholder, 100% live data)
   pollTimer = setInterval(() => {
-    if (!isLoginOpen.value) {
+    if (!isLoginOpen.value && !isChangePasswordForced.value) {
       fetchData()
     }
   }, 10000)

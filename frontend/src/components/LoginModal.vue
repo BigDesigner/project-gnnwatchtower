@@ -17,7 +17,8 @@
           <input 
             v-model="username" 
             required 
-            placeholder="admin"
+            placeholder="Kullanıcı Adı"
+            autocomplete="username"
             class="bg-[#0c0e12] border border-[#232936] rounded px-3 py-2 text-txt-primary focus:outline-none focus:border-blue-500"
           />
         </div>
@@ -29,6 +30,7 @@
             type="password"
             required 
             placeholder="••••••••"
+            autocomplete="current-password"
             class="bg-[#0c0e12] border border-[#232936] rounded px-3 py-2 text-txt-primary focus:outline-none focus:border-blue-500"
           />
         </div>
@@ -45,10 +47,6 @@
           {{ isSubmitting ? 'Doğrulanıyor...' : 'Giriş Yap' }}
         </button>
       </form>
-
-      <div class="text-center text-[10px] text-txt-muted pt-2 border-t border-[#1e2533]">
-        Varsayılan Giriş: <span class="font-mono text-txt-secondary">admin / admin</span>
-      </div>
     </div>
   </div>
 </template>
@@ -63,7 +61,7 @@ const props = defineProps({
 
 const emit = defineEmits(['logged-in'])
 
-const username = ref('admin')
+const username = ref('')
 const password = ref('')
 const isSubmitting = ref(false)
 const errorMessage = ref('')

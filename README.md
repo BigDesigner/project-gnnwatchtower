@@ -15,8 +15,7 @@ curl -sSL https://raw.githubusercontent.com/BigDesigner/project-gnnwatchtower/ma
 
 Kurulum tamamlandığında izleme konsoluna tarayıcınızdan erişebilirsiniz:
 - **URL**: `http://<SUNUCU_IP>:3800`
-- **Varsayılan Kullanıcı**: `admin`
-- **Varsayılan Parola**: `admin`
+- **İlk Giriş**: Kullanıcı: `admin` | Parola: `admin` *(İlk girişte parola değişimi zorunludur)*
 
 ---
 

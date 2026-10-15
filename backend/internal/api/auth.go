@@ -45,9 +45,10 @@ func init() {
 }
 
 type sessionInfo struct {
-	Username  string
-	Role      string
-	ExpiresAt time.Time
+	Username           string
+	Role               string
+	MustChangePassword bool
+	ExpiresAt          time.Time
 }
 
 type loginAttempt struct {
@@ -129,6 +130,12 @@ func Login(c *gin.Context) {
 		_, _ = database.DB.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", newBcryptHash, id)
 	}
 
+	// If password was default 'admin', ensure must_change_password = 1
+	if input.Password == "admin" {
+		mustChange = 1
+		_, _ = database.DB.Exec("UPDATE users SET must_change_password = 1 WHERE id = $1", id)
+	}
+
 	// Generate session token
 	tokenBytes := make([]byte, 24)
 	_, _ = rand.Read(tokenBytes)
@@ -136,9 +143,10 @@ func Login(c *gin.Context) {
 
 	sessionsMu.Lock()
 	activeSessions[token] = sessionInfo{
-		Username:  input.Username,
-		Role:      role,
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // 7 days session
+		Username:           input.Username,
+		Role:               role,
+		MustChangePassword: mustChange == 1,
+		ExpiresAt:          time.Now().Add(7 * 24 * time.Hour), // 7 days session
 	}
 	sessionsMu.Unlock()
 
@@ -148,6 +156,26 @@ func Login(c *gin.Context) {
 		"role":                 role,
 		"must_change_password": mustChange == 1,
 		"message":              "Giriş başarılı",
+	})
+}
+
+// GetCurrentUser returns session status and whether password change is mandatory
+func GetCurrentUser(c *gin.Context) {
+	username := c.GetString("username")
+	role := c.GetString("role")
+	mustChange := c.GetBool("must_change_password")
+
+	if database.DB != nil && username != "" {
+		var dbMustChange int
+		if err := database.DB.QueryRow("SELECT must_change_password FROM users WHERE username = $1", username).Scan(&dbMustChange); err == nil {
+			mustChange = dbMustChange == 1
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"username":             username,
+		"role":                 role,
+		"must_change_password": mustChange,
 	})
 }
 
@@ -165,6 +193,11 @@ func ChangePassword(c *gin.Context) {
 
 	if len(input.NewPassword) < 8 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Yeni şifre en az 8 karakter olmalıdır"})
+		return
+	}
+
+	if input.NewPassword == "admin" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Yeni parola varsayılan 'admin' parolası olamaz"})
 		return
 	}
 
@@ -188,10 +221,24 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Şifre başarıyla değiştirildi."})
+	// Invalidate must_change_password for the active session in memory
+	token := c.GetString("token")
+	if token != "" {
+		sessionsMu.Lock()
+		if sess, ok := activeSessions[token]; ok {
+			sess.MustChangePassword = false
+			activeSessions[token] = sess
+		}
+		sessionsMu.Unlock()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":              "Şifre başarıyla değiştirildi.",
+		"must_change_password": false,
+	})
 }
 
-// AuthMiddleware validates session token
+// AuthMiddleware validates session token and enforces mandatory password change
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.GetHeader("Authorization")
@@ -217,6 +264,22 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		c.Set("username", sess.Username)
 		c.Set("role", sess.Role)
+		c.Set("token", token)
+		c.Set("must_change_password", sess.MustChangePassword)
+
+		// If user is required to change password, reject access to general APIs
+		if sess.MustChangePassword {
+			path := c.Request.URL.Path
+			if path != "/api/auth/change-password" && path != "/api/auth/me" {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error":                "Zorunlu güvenlik güncellemesi: Devam etmeden önce varsayılan parolanızı değiştirmelisiniz.",
+					"must_change_password": true,
+				})
+				c.Abort()
+				return
+			}
+		}
+
 		c.Next()
 	}
 }

@@ -170,7 +170,7 @@ echo -e "${GREEN}===============================================================
 echo -e "${GREEN}  ✓ GNNwatchtower Kurulumu Basariyla Tamamlandi!                 ${NC}"
 echo -e "${GREEN}=================================================================${NC}"
 echo -e "Yonetim Paneli Adresi: ${CYAN}http://${SERVER_IP}:3800${NC}"
-echo -e "Ilk Giris Bilgileri  : Kullanici Adi: ${CYAN}admin${NC} | Parola: ${CYAN}admin${NC}"
+echo -e "Ilk Giris Bilgileri  : Kullanici Adi: ${CYAN}admin${NC} | Parola: ${CYAN}admin${NC} (Ilk giriste parola degisimi zorunludur)"
 echo -e "Durum Kontrolu       : ${BLUE}systemctl status gnnwatchtower${NC}"
 echo -e "Canli Gunluk Kayit   : ${BLUE}journalctl -u gnnwatchtower -f${NC}"
 echo -e "${GREEN}=================================================================${NC}"
