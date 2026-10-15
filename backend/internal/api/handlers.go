@@ -786,18 +786,48 @@ func TestAlert(c *gin.Context) {
 		}
 	}
 
-	testMsg := fmt.Sprintf("✅ [GNNwatchtower] Test bildirimi başarıyla alındı!\nZaman: %s\nBu bildirim kanal entegrasyonunu doğrulamak için gönderilmiştir.", time.Now().Format("2006-01-02 15:04:05"))
+	var companyName, location string
+	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'client_company_name'").Scan(&companyName)
+	companyName = strings.TrimSpace(companyName)
+	if companyName == "" {
+		companyName = "Müşteri Altyapısı"
+	}
+	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'client_location'").Scan(&location)
+	location = strings.TrimSpace(location)
+	if location == "" {
+		location = "Merkez Sistem Odası"
+	}
+
+	testTimestamp := time.Now().Format("2006-01-02 15:04:05")
 
 	switch strings.ToLower(req.Channel) {
 	case "telegram":
-		if err := incident.SendTelegram(req.TelegramBotToken, req.TelegramChatID, testMsg); err != nil {
+		tgMsg := incident.FormatTelegramAlert(
+			companyName,
+			location,
+			"Test Cihazı",
+			"127.0.0.1",
+			"TEST BAĞLANTISI",
+			"GNNwatchtower Telegram entegrasyonu ve bildirim tablosu başarıyla doğrulandı.",
+			testTimestamp,
+		)
+		if err := incident.SendTelegram(req.TelegramBotToken, req.TelegramChatID, tgMsg); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Telegram test bildirimi başarıyla iletildi!"})
 
 	case "discord":
-		if err := incident.SendDiscord(req.DiscordWebhookURL, "**[GNNwatchtower] Test Bildirimi**\n"+testMsg); err != nil {
+		discMsg := incident.FormatDiscordAlert(
+			companyName,
+			location,
+			"Test Cihazı",
+			"127.0.0.1",
+			"TEST BAĞLANTISI",
+			"GNNwatchtower Discord entegrasyonu ve bildirim tablosu başarıyla doğrulandı.",
+			testTimestamp,
+		)
+		if err := incident.SendDiscord(req.DiscordWebhookURL, discMsg); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
@@ -809,11 +839,13 @@ func TestAlert(c *gin.Context) {
 			req.BrevoSenderName,
 			req.BrevoSenderEmail,
 			req.BrevoRecipient,
-			"Test Sunucusu",
+			"Test Cihazı",
 			"127.0.0.1",
-			"TEST",
+			"TEST BAĞLANTISI",
 			"GNNwatchtower e-posta entegrasyonu başarıyla doğrulandı.",
-			time.Now().Format("2006-01-02 15:04:05"),
+			testTimestamp,
+			companyName,
+			location,
 		); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return

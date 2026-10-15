@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -54,6 +55,118 @@ func isChannelEnabled(val string) bool {
 	return v == "true" || v == "1" || v == "yes"
 }
 
+// padRight pads string with spaces to reach exact visual rune width (supports UTF-8 / Turkish characters)
+func padRight(s string, targetWidth int) string {
+	runes := []rune(s)
+	if len(runes) > targetWidth {
+		if targetWidth > 3 {
+			return string(runes[:targetWidth-3]) + "..."
+		}
+		return string(runes[:targetWidth])
+	}
+	return s + strings.Repeat(" ", targetWidth-len(runes))
+}
+
+// BuildAsciiTable formats a 36-character wide UTF-8 box table for Telegram and Discord code blocks
+func BuildAsciiTable(company, device, ip, status, timestamp string) string {
+	col1Width := 9
+	col2Width := 20
+
+	row := func(param, val string) string {
+		return fmt.Sprintf("│ %s │ %s │", padRight(param, col1Width), padRight(val, col2Width))
+	}
+
+	return fmt.Sprintf(
+`┌───────────┬──────────────────────┐
+│ Parametre │ Değer                │
+├───────────┼──────────────────────┤
+%s
+%s
+%s
+%s
+%s
+└───────────┴──────────────────────┘`,
+		row("Müşteri", company),
+		row("Cihaz", device),
+		row("IP", ip),
+		row("Durum", status),
+		row("Zaman", timestamp),
+	)
+}
+
+// FormatTelegramAlert constructs a rich HTML notification with customer company name and ASCII table
+func FormatTelegramAlert(company, location, device, ip, alertType, detail, timestamp string) string {
+	escapedComp := html.EscapeString(company)
+	escapedLoc := html.EscapeString(location)
+	escapedType := html.EscapeString(alertType)
+	escapedDetail := html.EscapeString(detail)
+
+	table := BuildAsciiTable(company, device, ip, alertType, timestamp)
+
+	locStr := ""
+	if escapedLoc != "" {
+		locStr = fmt.Sprintf(" (%s)", escapedLoc)
+	}
+
+	return fmt.Sprintf(
+`🏢 <b>MÜŞTERİ: %s</b>%s
+🚨 <b>BİLDİRİM: %s</b>
+
+<pre>
+%s
+</pre>
+📋 <b>Detay:</b> %s
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡️ <i>GNNwatchtower Appliance</i>`,
+		escapedComp, locStr, escapedType, table, escapedDetail,
+	)
+}
+
+// FormatDiscordAlert constructs a Discord webhook payload with color-coded embed, ASCII table and fields
+func FormatDiscordAlert(company, location, device, ip, alertType, detail, timestamp string) string {
+	table := BuildAsciiTable(company, device, ip, alertType, timestamp)
+
+	color := 0x0284C7 // Cyan / Info default
+	upperType := strings.ToUpper(alertType)
+	if strings.Contains(upperType, "DOWN") || strings.Contains(upperType, "KESİNTİ") || strings.Contains(upperType, "HATA") || strings.Contains(upperType, "CRASH") || strings.Contains(upperType, "OFFLINE") {
+		color = 0xDC2626 // Red
+	} else if strings.Contains(upperType, "ONLINE") || strings.Contains(upperType, "RECOVERY") || strings.Contains(upperType, "BAŞARI") || strings.Contains(upperType, "ÇÖZÜLDÜ") {
+		color = 0x16A34A // Green
+	} else if strings.Contains(upperType, "BAKIM") || strings.Contains(upperType, "PLANLI") || strings.Contains(upperType, "UYARI") {
+		color = 0xF59E0B // Orange / Amber
+	}
+
+	locDisplay := location
+	if locDisplay == "" {
+		locDisplay = "Merkez Sistem Odası"
+	}
+
+	payload := map[string]interface{}{
+		"content": fmt.Sprintf("🚨 **[GNNwatchtower] %s Bildirimi** — **%s**", alertType, company),
+		"embeds": []map[string]interface{}{
+			{
+				"title": fmt.Sprintf("[%s] %s (%s)", alertType, device, ip),
+				"description": fmt.Sprintf("```\n%s\n```\n**Detay:** %s", table, detail),
+				"color": color,
+				"fields": []map[string]interface{}{
+					{"name": "🏢 Müşteri Şirketi", "value": fmt.Sprintf("**%s**", company), "inline": true},
+					{"name": "📍 Lokasyon / Şube", "value": locDisplay, "inline": true},
+					{"name": "⚠️ Olay Türü", "value": fmt.Sprintf("`%s`", alertType), "inline": true},
+					{"name": "🖥️ Cihaz Adı", "value": fmt.Sprintf("`%s`", device), "inline": true},
+					{"name": "🌐 IP Adresi", "value": fmt.Sprintf("`%s`", ip), "inline": true},
+					{"name": "⏰ Zaman", "value": timestamp, "inline": true},
+				},
+				"footer": map[string]string{
+					"text": fmt.Sprintf("GNNwatchtower Appliance • %s", company),
+				},
+			},
+		},
+	}
+
+	jsonBytes, _ := json.Marshal(payload)
+	return string(jsonBytes)
+}
+
 // DispatchAlert sends notifications to configured external channels (Brevo Email, Telegram, Discord)
 func DispatchAlert(deviceName, ip, alertType, detail string) {
 	if database.DB == nil {
@@ -64,6 +177,14 @@ func DispatchAlert(deviceName, ip, alertType, detail string) {
 
 	// Read settings
 	settings := getAlertSettings()
+	companyName := strings.TrimSpace(settings["client_company_name"])
+	if companyName == "" {
+		companyName = "Müşteri Altyapısı"
+	}
+	location := strings.TrimSpace(settings["client_location"])
+	if location == "" {
+		location = "Merkez Sistem Odası"
+	}
 
 	// 1. Brevo Email Integration
 	if isChannelEnabled(settings["brevo_enabled"]) && settings["brevo_api_key"] != "" && settings["brevo_recipient_email"] != "" {
@@ -74,25 +195,24 @@ func DispatchAlert(deviceName, ip, alertType, detail string) {
 				settings["brevo_sender_email"],
 				settings["brevo_recipient_email"],
 				deviceName, ip, alertType, detail, timestamp,
+				companyName, location,
 			)
 		}()
 	}
 
 	// 2. Telegram Integration
 	if isChannelEnabled(settings["telegram_enabled"]) && settings["telegram_bot_token"] != "" && settings["telegram_chat_id"] != "" {
-		msg := fmt.Sprintf("🚨 [GNNwatchtower] [%s]\nCihaz: %s (%s)\nZaman: %s\nDetay: %s",
-			alertType, deviceName, ip, timestamp, detail)
+		tgMsg := FormatTelegramAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
 		go func() {
-			_ = SendTelegram(settings["telegram_bot_token"], settings["telegram_chat_id"], msg)
+			_ = SendTelegram(settings["telegram_bot_token"], settings["telegram_chat_id"], tgMsg)
 		}()
 	}
 
 	// 3. Discord Webhook Integration
 	if isChannelEnabled(settings["discord_enabled"]) && settings["discord_webhook_url"] != "" {
-		msg := fmt.Sprintf("**[GNNwatchtower] [%s]**\n**Cihaz:** %s (%s)\n**Zaman:** %s\n**Detay:** %s",
-			alertType, deviceName, ip, timestamp, detail)
+		discMsg := FormatDiscordAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
 		go func() {
-			_ = SendDiscord(settings["discord_webhook_url"], msg)
+			_ = SendDiscord(settings["discord_webhook_url"], discMsg)
 		}()
 	}
 }
@@ -102,6 +222,7 @@ func getAlertSettings() map[string]string {
 	rows, err := database.DB.Query(`
 		SELECT key, value FROM system_settings 
 		WHERE key IN (
+			'client_company_name', 'client_location',
 			'brevo_enabled', 'brevo_api_key', 'brevo_sender_name', 'brevo_sender_email', 'brevo_recipient_email',
 			'telegram_enabled', 'telegram_bot_token', 'telegram_chat_id',
 			'discord_enabled', 'discord_webhook_url'
@@ -122,7 +243,7 @@ func getAlertSettings() map[string]string {
 }
 
 // SendBrevoEmail sends an email alert via Brevo REST API
-func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip, alertType, detail, timestamp string) error {
+func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip, alertType, detail, timestamp, company, location string) error {
 	apiKey = strings.TrimSpace(apiKey)
 	senderEmail = strings.TrimSpace(senderEmail)
 	recipientEmail = strings.TrimSpace(recipientEmail)
@@ -139,8 +260,14 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 	if senderEmail == "" {
 		senderEmail = "alerts@gnnwatchtower.local"
 	}
+	if company == "" {
+		company = "Müşteri Altyapısı"
+	}
+	if location == "" {
+		location = "Merkez Sistem Odası"
+	}
 
-	subject := fmt.Sprintf("[GNNwatchtower] [%s] %s (%s)", alertType, devName, ip)
+	subject := fmt.Sprintf("[%s] [%s] %s (%s)", company, alertType, devName, ip)
 	htmlBody := fmt.Sprintf(`
 		<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 6px; background-color: #ffffff;">
 			<div style="border-bottom: 2px solid #0284c7; padding-bottom: 10px; margin-bottom: 20px;">
@@ -148,6 +275,8 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 				<p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Altyapı İzleme ve Olay Yönetim Sistemi</p>
 			</div>
 			<div style="background-color: #f8fafc; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+				<p style="margin: 6px 0; font-size: 14px;"><strong>Müşteri:</strong> <span style="color: #0284c7; font-weight: bold;">%s</span></p>
+				<p style="margin: 6px 0; font-size: 14px;"><strong>Lokasyon:</strong> %s</p>
 				<p style="margin: 6px 0; font-size: 14px;"><strong>Olay Tipi:</strong> <span style="color: #dc2626; font-weight: bold;">%s</span></p>
 				<p style="margin: 6px 0; font-size: 14px;"><strong>Cihaz Adı:</strong> %s</p>
 				<p style="margin: 6px 0; font-size: 14px;"><strong>IP Adresi:</strong> %s</p>
@@ -156,7 +285,7 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 			</div>
 			<p style="color: #94a3b8; font-size: 12px; margin: 0;">Bu e-posta GNNwatchtower tarafından otomatik olarak oluşturulmuştur.</p>
 		</div>
-	`, alertType, devName, ip, timestamp, detail)
+	`, company, location, alertType, devName, ip, timestamp, detail)
 
 	payload := map[string]interface{}{
 		"sender": map[string]string{
@@ -220,8 +349,9 @@ func SendTelegram(token, chatID, text string) error {
 
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	payload := map[string]string{
-		"chat_id": chatID,
-		"text":    text,
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "HTML",
 	}
 	body, _ := json.Marshal(payload)
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -250,16 +380,23 @@ func SendTelegram(token, chatID, text string) error {
 }
 
 // SendDiscord dispatches an alert message to a Discord webhook URL
-func SendDiscord(webhookURL, text string) error {
+func SendDiscord(webhookURL, payloadOrText string) error {
 	webhookURL = strings.TrimSpace(webhookURL)
 	if webhookURL == "" {
 		return fmt.Errorf("Discord Webhook URL boş olamaz")
 	}
 
-	payload := map[string]string{
-		"content": text,
+	var body []byte
+	trimmed := strings.TrimSpace(payloadOrText)
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		body = []byte(trimmed)
+	} else {
+		payload := map[string]string{
+			"content": payloadOrText,
+		}
+		body, _ = json.Marshal(payload)
 	}
-	body, _ := json.Marshal(payload)
+
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Post(webhookURL, "application/json", bytes.NewBuffer(body))
 	if err != nil {
