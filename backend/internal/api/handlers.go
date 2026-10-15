@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -230,6 +231,38 @@ func GetDevices(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, devices)
+}
+
+func getServices(devID int) []models.ServiceMonitored {
+	var list []models.ServiceMonitored
+	if database.DB == nil {
+		return list
+	}
+	rows, err := database.DB.Query(`
+		SELECT id, device_id, name, check_type, target_port, target_path, expected_status_code, status, response_time_ms, last_check_at, created_at
+		FROM services_monitored WHERE device_id = $1
+	`, devID)
+	if err != nil {
+		return list
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var s models.ServiceMonitored
+		var targetPath sql.NullString
+		var lastCheck sql.NullTime
+		if err := rows.Scan(&s.ID, &s.DeviceID, &s.Name, &s.CheckType, &s.TargetPort, &targetPath,
+			&s.ExpectedStatusCode, &s.Status, &s.ResponseTimeMS, &lastCheck, &s.CreatedAt); err == nil {
+			if targetPath.Valid {
+				s.TargetPath = targetPath.String
+			}
+			if lastCheck.Valid {
+				s.LastCheckAt = &lastCheck.Time
+			}
+			list = append(list, s)
+		}
+	}
+	return list
 }
 
 // CreateDevice adds a new device manually or from discovery
