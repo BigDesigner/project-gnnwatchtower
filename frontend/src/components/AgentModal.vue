@@ -5,7 +5,7 @@
       <div class="p-4 border-b border-[#232936] flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="material-symbols-outlined text-emerald-400">verified_user</span>
-          <h3 class="text-sm font-semibold text-white">Kurumsal Telemetri Ajanı Dağıtımı (v0.4.0)</h3>
+          <h3 class="text-sm font-semibold text-white">Kurumsal Telemetri Ajanı Dağıtımı (v0.4.1)</h3>
         </div>
         <button @click="$emit('close')" class="text-txt-muted hover:text-white">
           <span class="material-symbols-outlined text-[20px]">close</span>

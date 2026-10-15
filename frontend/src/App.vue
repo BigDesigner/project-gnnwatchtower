@@ -877,7 +877,7 @@ const deleteDevice = async (id) => {
 
 const handleUpgradeAgent = async (device) => {
   if (!device || !device.id) return
-  if (!confirm(`'${device.name}' üzerindeki GNNwatchtower ajanına uzaktan v0.4.0 güncelleme talimatı göndermek istiyor musunuz?`)) return
+  if (!confirm(`'${device.name}' üzerindeki GNNwatchtower ajanına uzaktan v0.4.1 güncelleme talimatı göndermek istiyor musunuz?`)) return
   try {
     const res = await api.upgradeAgent(device.id)
     device.agent_upgrade_status = 'pending'

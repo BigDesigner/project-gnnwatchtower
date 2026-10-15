@@ -858,7 +858,7 @@ func AgentEnroll(c *gin.Context) {
 
 	agentVer := req.AgentVersion
 	if agentVer == "" {
-		agentVer = "0.4.0"
+		agentVer = "0.4.1"
 	}
 
 	// 1. Check if device already exists by machine_uuid or ip_address
@@ -922,7 +922,7 @@ func AgentEnroll(c *gin.Context) {
 		Token:                agentToken,
 		DeviceID:             devID,
 		CheckIntervalSeconds: 15,
-		ServerVersion:        "0.4.0",
+		ServerVersion:        "0.4.1",
 	})
 }
 
@@ -1084,7 +1084,7 @@ func AgentHeartbeat(c *gin.Context) {
 	// Normal heartbeat update
 	agentVer := report.AgentVersion
 	if agentVer == "" {
-		agentVer = "0.4.0"
+		agentVer = "0.4.1"
 	}
 	_, _ = database.DB.Exec(`
 		UPDATE devices 
@@ -1112,7 +1112,7 @@ func AgentHeartbeat(c *gin.Context) {
 
 		targetVer := upgTarget
 		if targetVer == "" {
-			targetVer = "0.4.0"
+			targetVer = "0.4.1"
 		}
 
 		checksum := getBinaryChecksum(platform)
@@ -1144,7 +1144,7 @@ func TriggerAgentUpgrade(c *gin.Context) {
 	var targetVersion string
 	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&targetVersion)
 	if targetVersion == "" {
-		targetVersion = "0.4.0"
+		targetVersion = "0.4.1"
 	}
 
 	res, err := database.DB.Exec(`
@@ -1181,7 +1181,7 @@ func TriggerAllAgentsUpgrade(c *gin.Context) {
 	var targetVersion string
 	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&targetVersion)
 	if targetVersion == "" {
-		targetVersion = "0.4.0"
+		targetVersion = "0.4.1"
 	}
 
 	res, err := database.DB.Exec(`
@@ -1211,7 +1211,7 @@ func GetAgentVersions(c *gin.Context) {
 		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&latestVersion)
 	}
 	if latestVersion == "" {
-		latestVersion = "0.4.0"
+		latestVersion = "0.4.1"
 	}
 
 	winHash := getBinaryChecksum("windows")
