@@ -191,7 +191,7 @@ func autoEnroll(serverURL string) (string, error) {
 }
 
 func main() {
-	serverURL := flag.String("server", "http://127.0.0.1:3800", "GNNwatchtower Appliance URL")
+	serverURL := flag.String("server", "", "GNNwatchtower Appliance URL (Orn: http://10.38.1.13:3800)")
 	token := flag.String("token", "", "GNNwatchtower Agent Token (Opsiyonel, bos ise otomatik kayit yapilir)")
 	serviceCmd := flag.String("service", "", "Servis islemleri: install, uninstall, start, stop, restart, status, diag")
 	intervalSec := flag.Int("interval", 15, "Periyodik heartbeat araligi (saniye)")
@@ -207,20 +207,14 @@ func main() {
 
 	// 1. Resolve effective server URL (CLI flag -> Saved server.url / SCM ImagePath -> Default)
 	resolvedServerURL := *serverURL
-	savedURL := loadServerURL()
-
-	isExplicitServer := false
-	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "-server") || strings.HasPrefix(arg, "--server") {
-			isExplicitServer = true
-			break
-		}
+	if resolvedServerURL == "" {
+		resolvedServerURL = loadServerURL()
+	} else if resolvedServerURL != "http://127.0.0.1:3800" {
+		saveServerURL(resolvedServerURL)
 	}
 
-	if (!isExplicitServer || resolvedServerURL == "http://127.0.0.1:3800") && savedURL != "" {
-		resolvedServerURL = savedURL
-	} else if isExplicitServer && resolvedServerURL != "" && resolvedServerURL != "http://127.0.0.1:3800" {
-		saveServerURL(resolvedServerURL)
+	if resolvedServerURL == "" {
+		resolvedServerURL = "http://127.0.0.1:3800"
 	}
 
 	// 2. Check if invoked as service management command
