@@ -1003,12 +1003,13 @@ func AgentEnroll(c *gin.Context) {
 			    os_version = $5,
 			    device_type = $6,
 			    status = 'online',
+			    agent_upgrade_error = 'key_healed',
 			    last_seen_at = CURRENT_TIMESTAMP,
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE id = $7
 		`, agentToken, agentVer, req.MachineUUID, req.MACAddress, req.OSName+" "+req.OSVersion, devType, devID)
 
-		incident.DispatchAlert(existingName, targetIP, "AJAN OTOMATİK BAĞLANDI", fmt.Sprintf("Kayıtlı cihaz '%s' yeni ajan anahtarı (v%s) ile otomatik tescil edildi.", existingName, agentVer))
+		log.Printf("[GNNwatchtower Core] Kayıtlı cihaz '%s' (%s) imza anahtarı ve oturum tokenını güncelledi.", existingName, targetIP)
 	} else {
 		// New device created via Auto-Enrollment!
 		res, insErr := database.DB.Exec(`
@@ -1120,7 +1121,7 @@ func AgentHeartbeat(c *gin.Context) {
 			`, report.AgentVersion, devID)
 		}
 	} else if report.UpgradeStatus != "" && report.UpgradeStatus != "none" {
-		if report.UpgradeStatus != upgStatus {
+		if report.UpgradeStatus != upgStatus && upgStatus != "pending" {
 			_, _ = database.DB.Exec(`
 				UPDATE devices 
 				SET agent_upgrade_status = $1,
@@ -1131,15 +1132,14 @@ func AgentHeartbeat(c *gin.Context) {
 	}
 
 	// Autonomous Zero-Touch Signer Key Healing:
-	// If the agent reported a missing Signer Key error, or if remote upgrade is pending for a legacy agent (< 0.4.8),
-	// challenge the agent ONCE with HTTP 401 Unauthorized.
-	// All existing agents (v0.4.4 - v0.4.7) react to 401 by calling autoEnroll(),
-	// which provisions the Ed25519 signer.pub key onto the remote disk transparently!
-	if strings.Contains(report.UpgradeError, "Signer Key") || strings.Contains(report.UpgradeError, "anahtari") || (upgStatus == "pending" && report.AgentVersion != "" && report.AgentVersion < "0.4.8") {
+	// If the agent reported a missing Signer Key error and upgrade is NOT yet pending,
+	// challenge the agent ONCE with HTTP 401 Unauthorized so it invokes autoEnroll() to fetch signer.pub.
+	// But if upgStatus == "pending", DO NOT challenge; proceed to dispatch the upgrade instruction!
+	if (strings.Contains(report.UpgradeError, "Signer Key") || strings.Contains(report.UpgradeError, "anahtari")) && upgStatus != "pending" {
 		var healedCount int
 		_ = database.DB.QueryRow("SELECT COUNT(*) FROM devices WHERE id = $1 AND agent_upgrade_error = 'key_healed'", devID).Scan(&healedCount)
 		if healedCount == 0 {
-			_, _ = database.DB.Exec("UPDATE devices SET agent_upgrade_error = 'key_healed', agent_upgrade_status = 'pending' WHERE id = $1", devID)
+			_, _ = database.DB.Exec("UPDATE devices SET agent_upgrade_error = 'key_healed' WHERE id = $1", devID)
 			log.Printf("[GNNwatchtower Core] Ajan '%s' (%s) imza anahtarini otomatik tescil etmek uzere 401 ile yeniden kayda yonlendirildi", devName, report.LocalIP)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Imza anahtari tescili icin otomatik yeniden kayit tetiklendi"})
 			return
