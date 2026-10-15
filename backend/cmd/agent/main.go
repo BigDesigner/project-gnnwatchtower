@@ -137,7 +137,7 @@ func saveAgentKey(token string) error {
 }
 
 func autoEnroll(serverURL string) (string, error) {
-	log.Printf("[GNNwatchtower Agent] Token bulunamadi. Wazuh tarzi otomatik kayit (Auto-Enrollment) baslatiliyor...")
+	log.Printf("[GNNwatchtower Agent] Token bulunamadi. Otomatik kayit (Auto-Enrollment) baslatiliyor...")
 
 	hostname, _ := os.Hostname()
 	reqBody := map[string]interface{}{
@@ -205,12 +205,21 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 1. Resolve effective server URL (CLI flag -> Saved server.url -> Default)
+	// 1. Resolve effective server URL (CLI flag -> Saved server.url / SCM ImagePath -> Default)
 	resolvedServerURL := *serverURL
 	savedURL := loadServerURL()
-	if (resolvedServerURL == "" || resolvedServerURL == "http://127.0.0.1:3800") && savedURL != "" {
+
+	isExplicitServer := false
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "-server") || strings.HasPrefix(arg, "--server") {
+			isExplicitServer = true
+			break
+		}
+	}
+
+	if (!isExplicitServer || resolvedServerURL == "http://127.0.0.1:3800") && savedURL != "" {
 		resolvedServerURL = savedURL
-	} else if resolvedServerURL != "" && resolvedServerURL != "http://127.0.0.1:3800" {
+	} else if isExplicitServer && resolvedServerURL != "" && resolvedServerURL != "http://127.0.0.1:3800" {
 		saveServerURL(resolvedServerURL)
 	}
 

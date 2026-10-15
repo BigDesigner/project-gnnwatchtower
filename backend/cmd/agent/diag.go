@@ -23,6 +23,25 @@ func runDiagnostics(serverURL, token string) {
 			targetURL = savedURL
 		}
 	}
+	if targetURL == "" || targetURL == "http://127.0.0.1:3800" {
+		fmt.Println("[!] GNNwatchtower Appliance adresi yapilandirilmamis.")
+		fmt.Print("    Lutfen Sunucu Adresini Giriniz (Orn: http://10.38.1.13:3800): ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			val := strings.TrimSpace(scanner.Text())
+			if val != "" {
+				if !strings.HasPrefix(val, "http://") && !strings.HasPrefix(val, "https://") {
+					val = "http://" + val
+				}
+				if !strings.Contains(val[7:], ":") {
+					val = val + ":3800"
+				}
+				targetURL = val
+				saveServerURL(targetURL)
+				fmt.Printf("[OK] Sunucu adresi kaydedildi: %s\n\n", targetURL)
+			}
+		}
+	}
 	if targetURL == "" {
 		targetURL = "http://127.0.0.1:3800"
 	}

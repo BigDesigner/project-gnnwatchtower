@@ -381,8 +381,33 @@ func loadServerURL() string {
 	data, err := os.ReadFile(p)
 	if err == nil {
 		u := strings.TrimSpace(string(data))
-		if u != "" {
+		if u != "" && u != "http://127.0.0.1:3800" {
 			return u
+		}
+	}
+	// Fallback: check Windows Service ImagePath in Registry
+	if regURL := loadServerURLFromRegistry(); regURL != "" {
+		saveServerURL(regURL)
+		return regURL
+	}
+	return ""
+}
+
+func loadServerURLFromRegistry() string {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+serviceName, registry.QUERY_VALUE)
+	if err == nil {
+		defer k.Close()
+		imagePath, _, err := k.GetStringValue("ImagePath")
+		if err == nil && imagePath != "" {
+			parts := strings.Split(imagePath, " ")
+			for i, p := range parts {
+				if p == "-server" && i+1 < len(parts) {
+					u := strings.Trim(parts[i+1], `"' `)
+					if strings.HasPrefix(u, "http") {
+						return u
+					}
+				}
+			}
 		}
 	}
 	return ""

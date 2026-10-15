@@ -131,7 +131,7 @@ type AgentReport struct {
 	ShutdownReason string          `json:"shutdown_reason"` // graceful_shutdown, reboot, etc.
 }
 
-// AgentEnrollRequest represents Wazuh-style zero-touch agent enrollment
+// AgentEnrollRequest represents zero-touch agent enrollment
 type AgentEnrollRequest struct {
 	Hostname     string `json:"hostname" binding:"required"`
 	LocalIP      string `json:"local_ip"`

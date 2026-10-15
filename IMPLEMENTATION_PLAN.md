@@ -163,7 +163,7 @@ Ajanların kurumsal XDR/EDR (Defender for Endpoint, CrowdStrike, SentinelOne) si
 
 ---
 
-### 4.6. Wazuh Tarzı Otomatik Kayıt & Token Yönetimi (Auto-Enrollment Engine)
+### 4.6. Sıfır-Dokunuş Otomatik Kayıt & Token Yönetimi (Zero-Touch Auto-Enrollment Engine)
 
 Ajan kurulum komutuna statik token gömme zorunluluğu kaldırılmıştır.
 
@@ -279,7 +279,7 @@ sudo bash install.sh
 | **Faz 1** | Çekirdek Altyapı & Veritabanı | SQLite WAL, Auth, Settings, Modeller | Tamamlandı |
 | **Faz 2** | Keşif & Alarm Motoru | CIDR Keşfi, Brevo, Discord, Telegram, Kesinti Korelasyonu | Tamamlandı |
 | **Faz 3** | **Enterprise Ajan Mimarisi (SCM & EDR Uyum)** | `golang.org/x/sys/windows/svc` yerel servis, PE Resource (`.syso`), Windows Event Log entegrasyonu | Beklemede (Onay Sonrası) |
-| **Faz 4** | **Wazuh Tarzı Auto-Enrollment & Token Yönetimi** | `POST /api/agent/enroll` API, güvenli `agent.key` ACL dosya yönetimi, dinamik token üretimi | Beklemede (Onay Sonrası) |
+| **Faz 4** | **Sıfır-Dokunuş Auto-Enrollment & Token Yönetimi** | `POST /api/agent/enroll` API, güvenli `agent.key` ACL dosya yönetimi, dinamik token üretimi | Beklemede (Onay Sonrası) |
 | **Faz 5** | **Merkezi Uzaktan Güncelleme (Remote Upgrade)** | Heartbeat-Driven Pull orkestrasyonu, SHA256 checksum doğrulama, atomic binary swap | Beklemede (Onay Sonrası) |
 | **Faz 6** | **Web UI Revizyonu (Ajan Yönetim Konsolu)** | Ajan sürüm rozetleri, tek tıkla güncelleme butonu, temiz dağıtım modalı | Beklemede (Onay Sonrası) |
 | **Faz 7** | Doğrulama & E2E Test | Windows Server ve Linux üzerinde servis döngüsü, EDR log analizi ve güncelleme testi | Beklemede (Onay Sonrası) |

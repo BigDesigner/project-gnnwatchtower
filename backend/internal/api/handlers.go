@@ -823,7 +823,7 @@ func TestAlert(c *gin.Context) {
 	}
 }
 
-// AgentEnroll handles Wazuh-style zero-touch agent enrollment
+// AgentEnroll handles zero-touch agent enrollment
 func AgentEnroll(c *gin.Context) {
 	if database.DB == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Veritabanı hazır değil"})

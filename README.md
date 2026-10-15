@@ -78,7 +78,7 @@ sudo journalctl -u gnnwatchtower -n 50 --no-pager
 
 Uzak sunuculardan (Windows ve Linux) CPU, RAM, Disk, Isı ve pre-shutdown (kapanma öncesi) sinyallerini toplamak için hafif ve sıfır bağımlılıklı ajan mevcuttur.
 
-### 1. Wazuh Tarzı Sıfır-Dokunuş Otomatik Kayıt (Zero-Touch Auto-Enrollment)
+### 1. Sıfır-Dokunuş Otomatik Kayıt (Zero-Touch Auto-Enrollment)
 Ajan, uç noktalara kurulduğunda donanım ve işletim sistemi parmak izi ile merkeze otomatik tescil edilir (`POST /api/agent/enroll`). Komut satırında veya betiklerde gizli token bulunmaz; EDR/XDR sistemleriyle tam uyumlu yerel işletim sistemi servisi (Windows SCM / Linux Systemd) olarak çalışır:
 
 * **Linux (Ubuntu / Debian):**

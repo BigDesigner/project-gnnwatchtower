@@ -17,7 +17,7 @@
         <div class="p-3 rounded bg-blue-950/30 border border-blue-900/40 text-blue-300 text-[11px] leading-relaxed flex items-start gap-2.5">
           <span class="material-symbols-outlined text-[18px] text-blue-400 shrink-0 mt-0.5">info</span>
           <div>
-            <span class="font-semibold text-white">Wazuh Tarzı Otomatik Kayıt (Zero-Touch Auto-Enrollment):</span>
+            <span class="font-semibold text-white">Otomatik Kayıt (Zero-Touch Auto-Enrollment):</span>
             Ajan uç noktaya kurulduktan sonra donanım parmak izi ile merkeze otomatik tescil edilir ve şifreli yerel anahtar üretilir. Komut satırında veya betiklerde gizli token bulunmaz; EDR/XDR sistemleri tarafından güvenle karşılanır.
           </div>
         </div>
