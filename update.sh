@@ -58,6 +58,7 @@ echo -e "${BLUE}[3/4] En guncel kodlar GitHub'dan indiriliyor ve derleniyor...${
 MISSING_PKGS=()
 if ! command -v git >/dev/null 2>&1; then MISSING_PKGS+=("git"); fi
 if ! command -v go >/dev/null 2>&1; then MISSING_PKGS+=("golang-go"); fi
+if ! command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then MISSING_PKGS+=("binutils-mingw-w64-x86-64"); fi
 if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq || true
@@ -75,8 +76,8 @@ mkdir -p "$INSTALL_DIR/bin"
 if command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then
     (cd "$BUILD_DIR/backend/cmd/agent" && x86_64-w64-mingw32-windres versioninfo.rc -O coff -o rsrc_windows_amd64.syso 2>/dev/null || true)
 fi
-(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-X 'main.Version=0.4.0'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent" ./cmd/agent)
-(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-X 'main.Version=0.4.0'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent.exe" ./cmd/agent)
+(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X 'main.Version=0.4.0'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent" ./cmd/agent)
+(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X 'main.Version=0.4.0'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent.exe" ./cmd/agent)
 chmod +x "$INSTALL_DIR/bin/gnnwatchtower-agent"
 
 # Binary'yi guvenle yerlestir

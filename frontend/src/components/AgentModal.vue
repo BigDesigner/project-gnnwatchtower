@@ -152,7 +152,7 @@ const linuxCmd = computed(() => {
 })
 
 const winCmd = computed(() => {
-  return `Invoke-WebRequest -Uri "${hostUrl.value}/api/agent/install/windows" -OutFile "$env:TEMP\\install-gnnagent.ps1"; powershell.exe -ExecutionPolicy Bypass -File "$env:TEMP\\install-gnnagent.ps1"; Remove-Item "$env:TEMP\\install-gnnagent.ps1"`
+  return `New-Item -ItemType Directory -Force -Path "C:\\Program Files\\GNNwatchtower-Agent"; Invoke-WebRequest -Uri "${hostUrl.value}/api/agent/download/windows" -OutFile "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe"; & "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe" -service install -server "${hostUrl.value}"; & "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe" -service start`
 })
 
 const copyText = async (text, type) => {
