@@ -102,6 +102,7 @@ func FormatTelegramAlert(company, location, device, ip, alertType, detail, times
 	escapedDetail := html.EscapeString(detail)
 
 	table := BuildAsciiTable(company, device, ip, alertType, timestamp)
+	escapedTable := html.EscapeString(table)
 
 	locStr := ""
 	if escapedLoc != "" {
@@ -118,7 +119,7 @@ func FormatTelegramAlert(company, location, device, ip, alertType, detail, times
 📋 <b>Detay:</b> %s
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🛡️ <i>GNNwatchtower Appliance</i>`,
-		escapedComp, locStr, escapedType, table, escapedDetail,
+		escapedComp, locStr, escapedType, escapedTable, escapedDetail,
 	)
 }
 
@@ -186,34 +187,51 @@ func DispatchAlert(deviceName, ip, alertType, detail string) {
 		location = "Merkez Sistem Odası"
 	}
 
+	tgEnabled := isChannelEnabled(settings["telegram_enabled"])
+	discEnabled := isChannelEnabled(settings["discord_enabled"])
+	brevoEnabled := isChannelEnabled(settings["brevo_enabled"])
+
+	log.Printf("[Alert Engine] Tetiklendi: [%s] Cihaz: %s (%s) | Kanallar: Telegram=%v, Discord=%v, Brevo=%v",
+		alertType, deviceName, ip, tgEnabled, discEnabled, brevoEnabled)
+
 	// 1. Brevo Email Integration
-	if isChannelEnabled(settings["brevo_enabled"]) && settings["brevo_api_key"] != "" && settings["brevo_recipient_email"] != "" {
+	if brevoEnabled && settings["brevo_api_key"] != "" && settings["brevo_recipient_email"] != "" {
 		go func() {
-			_ = SendBrevoEmail(
+			if err := SendBrevoEmail(
 				settings["brevo_api_key"],
 				settings["brevo_sender_name"],
 				settings["brevo_sender_email"],
 				settings["brevo_recipient_email"],
 				deviceName, ip, alertType, detail, timestamp,
 				companyName, location,
-			)
+			); err != nil {
+				log.Printf("[Alert Engine] Brevo bildirim gönderim hatası: %v", err)
+			}
 		}()
 	}
 
 	// 2. Telegram Integration
-	if isChannelEnabled(settings["telegram_enabled"]) && settings["telegram_bot_token"] != "" && settings["telegram_chat_id"] != "" {
+	if tgEnabled && settings["telegram_bot_token"] != "" && settings["telegram_chat_id"] != "" {
 		tgMsg := FormatTelegramAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
 		go func() {
-			_ = SendTelegram(settings["telegram_bot_token"], settings["telegram_chat_id"], tgMsg)
+			if err := SendTelegram(settings["telegram_bot_token"], settings["telegram_chat_id"], tgMsg); err != nil {
+				log.Printf("[Alert Engine] Telegram bildirim gönderim hatası (%s / %s): %v", deviceName, ip, err)
+			}
 		}()
+	} else if settings["telegram_bot_token"] != "" && settings["telegram_chat_id"] != "" && !tgEnabled {
+		log.Printf("[Alert Engine] Telegram atlandı: Bot token ve Chat ID mevcut fakat 'telegram_enabled' ayarı kapalı (false).")
 	}
 
 	// 3. Discord Webhook Integration
-	if isChannelEnabled(settings["discord_enabled"]) && settings["discord_webhook_url"] != "" {
+	if discEnabled && settings["discord_webhook_url"] != "" {
 		discMsg := FormatDiscordAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
 		go func() {
-			_ = SendDiscord(settings["discord_webhook_url"], discMsg)
+			if err := SendDiscord(settings["discord_webhook_url"], discMsg); err != nil {
+				log.Printf("[Alert Engine] Discord bildirim gönderim hatası (%s / %s): %v", deviceName, ip, err)
+			}
 		}()
+	} else if settings["discord_webhook_url"] != "" && !discEnabled {
+		log.Printf("[Alert Engine] Discord atlandı: Webhook URL mevcut fakat 'discord_enabled' ayarı kapalı (false).")
 	}
 }
 

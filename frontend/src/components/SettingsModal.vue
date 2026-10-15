@@ -74,9 +74,10 @@
                 <span class="material-symbols-outlined text-[16px] text-sky-400">send</span>
                 Telegram Bot
               </span>
-              <label class="flex items-center gap-1 cursor-pointer">
-                <input type="checkbox" v-model="settings.telegram_enabled" true-value="true" false-value="false" class="rounded">
-                <span class="text-txt-secondary text-[11px]">Aktif</span>
+              <label class="flex items-center gap-1.5 cursor-pointer px-2 py-0.5 rounded border transition-colors"
+                     :class="settings.telegram_enabled === 'true' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-700 bg-zinc-800/50 text-txt-muted'">
+                <input type="checkbox" v-model="settings.telegram_enabled" true-value="true" false-value="false" class="rounded text-emerald-500 focus:ring-0">
+                <span class="text-[11px] font-semibold">{{ settings.telegram_enabled === 'true' ? 'Aktif (Açık)' : 'Devre Dışı' }}</span>
               </label>
             </div>
             <div class="grid grid-cols-2 gap-2">
@@ -117,9 +118,10 @@
                 <span class="material-symbols-outlined text-[16px] text-indigo-400">chat</span>
                 Discord Webhook
               </span>
-              <label class="flex items-center gap-1 cursor-pointer">
-                <input type="checkbox" v-model="settings.discord_enabled" true-value="true" false-value="false" class="rounded">
-                <span class="text-txt-secondary text-[11px]">Aktif</span>
+              <label class="flex items-center gap-1.5 cursor-pointer px-2 py-0.5 rounded border transition-colors"
+                     :class="settings.discord_enabled === 'true' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-700 bg-zinc-800/50 text-txt-muted'">
+                <input type="checkbox" v-model="settings.discord_enabled" true-value="true" false-value="false" class="rounded text-emerald-500 focus:ring-0">
+                <span class="text-[11px] font-semibold">{{ settings.discord_enabled === 'true' ? 'Aktif (Açık)' : 'Devre Dışı' }}</span>
               </label>
             </div>
             <input 
@@ -150,9 +152,10 @@
                 <span class="material-symbols-outlined text-[16px] text-emerald-400">mail</span>
                 Brevo (Sendinblue) REST API (HTTPS Port 443)
               </span>
-              <label class="flex items-center gap-1 cursor-pointer">
-                <input type="checkbox" v-model="settings.brevo_enabled" true-value="true" false-value="false" class="rounded">
-                <span class="text-txt-secondary text-[11px]">Aktif</span>
+              <label class="flex items-center gap-1.5 cursor-pointer px-2 py-0.5 rounded border transition-colors"
+                     :class="settings.brevo_enabled === 'true' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-700 bg-zinc-800/50 text-txt-muted'">
+                <input type="checkbox" v-model="settings.brevo_enabled" true-value="true" false-value="false" class="rounded text-emerald-500 focus:ring-0">
+                <span class="text-[11px] font-semibold">{{ settings.brevo_enabled === 'true' ? 'Aktif (Açık)' : 'Devre Dışı' }}</span>
               </label>
             </div>
             <input 
@@ -317,7 +320,10 @@ const sendTestAlert = async (channel) => {
       brevo_sender_name: settings.value.brevo_sender_name,
       brevo_recipient_email: settings.value.brevo_recipient_email
     })
-    testResults.value[channel] = { success: true, message: res.message || '✓ Gönderildi!' }
+    testResults.value[channel] = { success: true, message: (res.message || '✓ Gönderildi!') + ' (Kanal Aktif Edildi)' }
+    if (channel === 'telegram') settings.value.telegram_enabled = 'true'
+    if (channel === 'discord') settings.value.discord_enabled = 'true'
+    if (channel === 'brevo') settings.value.brevo_enabled = 'true'
   } catch (err) {
     testResults.value[channel] = { success: false, message: err.response?.data?.error || err.message }
   } finally {
