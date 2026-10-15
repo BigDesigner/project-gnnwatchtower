@@ -26,6 +26,8 @@ import (
 	"gnnwatchtower/internal/backup"
 	"gnnwatchtower/internal/database"
 	"gnnwatchtower/internal/monitor"
+	"gnnwatchtower/internal/version"
+	"runtime"
 )
 
 // ensureSelfSignedCert creates a zero-dependency self-signed ECDSA certificate for HTTPS
@@ -111,15 +113,21 @@ func ensureSelfSignedCert(certPath, keyPath string) error {
 var embeddedDist embed.FS
 
 func main() {
+	// 1. Resolve configuration
+	resetAdmin := flag.String("reset-admin", "", "Admin kullanıcısının parolasını doğrudan konsoldan sıfırlar (Örn: -reset-admin 'YeniParolaniz')")
+	showVersion := flag.Bool("version", false, "Sunucu sürüm numarasını gösterir")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("GNNwatchtower Server Appliance v%s (%s/%s)\n", version.Get(), runtime.GOOS, runtime.GOARCH)
+		os.Exit(0)
+	}
+
 	log.Println("======================================================")
-	log.Println(" GNNwatchtower Network Monitoring Appliance (Port 3800)")
+	log.Printf(" GNNwatchtower Network Monitoring Appliance v%s (Port 3800)\n", version.Get())
 	log.Println(" Architecture: Single Binary • Pure Go SQLite WAL")
 	log.Println(" License: GNU Affero General Public License v3 (AGPL-3.0)")
 	log.Println("======================================================")
-
-	// 1. Resolve configuration
-	resetAdmin := flag.String("reset-admin", "", "Admin kullanıcısının parolasını doğrudan konsoldan sıfırlar (Örn: -reset-admin 'YeniParolaniz')")
-	flag.Parse()
 
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {

@@ -1238,7 +1238,7 @@ func GetAgentVersions(c *gin.Context) {
 		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&latestVersion)
 	}
 	if latestVersion == "" {
-		latestVersion = "0.4.2"
+		latestVersion = version.Get()
 	}
 
 	winHash := getBinaryChecksum("windows")
