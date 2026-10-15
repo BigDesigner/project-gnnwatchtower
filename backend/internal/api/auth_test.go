@@ -62,8 +62,6 @@ func TestLoginRateLimiter(t *testing.T) {
 }
 
 func TestMandatoryPasswordChangeFlow(t *testing.T) {
-	t.Setenv("INITIAL_ADMIN_PASSWORD", "test-initial-pass-123")
-
 	attemptsMu.Lock()
 	loginAttempts = make(map[string]*loginAttempt)
 	userAttempts = make(map[string]*loginAttempt)
@@ -90,7 +88,7 @@ func TestMandatoryPasswordChangeFlow(t *testing.T) {
 	}
 
 	// 1. Login with initial admin credentials
-	loginBody := bytes.NewBufferString(`{"username":"admin","password":"test-initial-pass-123"}`)
+	loginBody := bytes.NewBufferString(`{"username":"admin","password":"admin"}`)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/api/auth/login", loginBody)
 	req.Header.Set("Content-Type", "application/json")
@@ -135,7 +133,7 @@ func TestMandatoryPasswordChangeFlow(t *testing.T) {
 
 	// 4. Attempting to change to 'admin' again must be rejected with 400
 	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("POST", "/api/auth/change-password", bytes.NewBufferString(`{"current_password":"test-initial-pass-123","new_password":"admin"}`))
+	req, _ = http.NewRequest("POST", "/api/auth/change-password", bytes.NewBufferString(`{"current_password":"admin","new_password":"admin"}`))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
@@ -146,7 +144,7 @@ func TestMandatoryPasswordChangeFlow(t *testing.T) {
 
 	// 5. Change password to secure password
 	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("POST", "/api/auth/change-password", bytes.NewBufferString(`{"current_password":"test-initial-pass-123","new_password":"SecurePassword123!"}`))
+	req, _ = http.NewRequest("POST", "/api/auth/change-password", bytes.NewBufferString(`{"current_password":"admin","new_password":"SecurePassword123!"}`))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)

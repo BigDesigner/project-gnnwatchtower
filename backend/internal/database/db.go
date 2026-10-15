@@ -224,47 +224,35 @@ func migrateSchema(db *sql.DB) error {
 		log.Printf("[GNNwatchtower Security] Initialized Agent Enrollment Key: %s...", enrollKey[:8])
 	}
 
-	// Create initial admin user if no users exist
+	// Create initial admin user if no users exist (admin / admin, must change password = 1)
 	var count int
 	_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
 	if count == 0 {
-		initPass := os.Getenv("INITIAL_ADMIN_PASSWORD")
-		if initPass == "" {
-			pBytes := make([]byte, 12)
-			_, _ = rand.Read(pBytes)
-			initPass = hex.EncodeToString(pBytes) // 24-character random password
+		initPass := "admin"
+		if envPass := os.Getenv("INITIAL_ADMIN_PASSWORD"); envPass != "" {
+			initPass = envPass
 		}
 		hash, err := HashPassword(initPass)
 		if err == nil {
 			_, _ = db.Exec("INSERT INTO users (username, password_hash, role, must_change_password) VALUES ('admin', $1, 'admin', 1)", hash)
-
-			// Save initial bootstrap password to local file with 0600 permissions
-			passFile := "./data/initial_admin_password.txt"
-			_ = os.WriteFile(passFile, []byte(initPass+"\n"), 0600)
-			log.Printf("[GNNwatchtower Security] =================================================================")
-			log.Printf("[GNNwatchtower Security] Initial administrator account provisioned.")
-			log.Printf("[GNNwatchtower Security] Bootstrap credential saved to %s (permissions: 0600).", passFile)
-			log.Printf("[GNNwatchtower Security] Mandatory password change is ENFORCED on first login.")
-			log.Printf("[GNNwatchtower Security] =================================================================")
+			log.Println("[GNNwatchtower Auth] Initial admin account provisioned (admin/admin). Mandatory password change is ENFORCED on first login.")
 		}
-	}
-
-	// Fix V03: If admin account still has legacy default password 'admin',
-	// ROTATE it immediately to an unguessable password to eliminate the first-claim takeover race!
-	var adminHash string
-	if err := db.QueryRow("SELECT password_hash FROM users WHERE username = 'admin'").Scan(&adminHash); err == nil {
-		if VerifyPassword("admin", adminHash) {
-			pBytes := make([]byte, 12)
-			_, _ = rand.Read(pBytes)
-			rotatedPass := hex.EncodeToString(pBytes)
-			if newHash, hErr := HashPassword(rotatedPass); hErr == nil {
-				_, _ = db.Exec("UPDATE users SET password_hash = $1, must_change_password = 1 WHERE username = 'admin'", newHash)
-				passFile := "./data/initial_admin_password.txt"
-				_ = os.WriteFile(passFile, []byte(rotatedPass+"\n"), 0600)
-				log.Printf("[GNNwatchtower Security] =================================================================")
-				log.Printf("[GNNwatchtower Security] Legacy default 'admin' password detected and ROTATED.")
-				log.Printf("[GNNwatchtower Security] New secure password written to %s (permissions: 0600).", passFile)
-				log.Printf("[GNNwatchtower Security] =================================================================")
+	} else {
+		// If admin account exists and has not yet completed initial password change (must_change_password == 1),
+		// ensure initial credentials (admin / admin) allow login so the web modal can force password change.
+		var mustChange int
+		var adminHash string
+		if err := db.QueryRow("SELECT must_change_password, password_hash FROM users WHERE username = 'admin'").Scan(&mustChange, &adminHash); err == nil {
+			if mustChange == 1 {
+				targetPass := "admin"
+				if envPass := os.Getenv("INITIAL_ADMIN_PASSWORD"); envPass != "" {
+					targetPass = envPass
+				}
+				if !VerifyPassword(targetPass, adminHash) {
+					newHash, _ := HashPassword(targetPass)
+					_, _ = db.Exec("UPDATE users SET password_hash = $1 WHERE username = 'admin'", newHash)
+					log.Println("[GNNwatchtower Auth] Initial setup password restored for web panel onboarding (admin/admin).")
+				}
 			}
 		}
 	}
