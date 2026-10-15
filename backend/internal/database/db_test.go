@@ -9,7 +9,10 @@ import (
 
 func TestHashPasswordAndVerify(t *testing.T) {
 	password := "SecretP@ssw0rd2026!"
-	hash := HashPassword(password)
+	hash, err := HashPassword(password)
+	if err != nil {
+		t.Fatalf("expected HashPassword to succeed: %v", err)
+	}
 
 	if !strings.HasPrefix(hash, "$2a$") && !strings.HasPrefix(hash, "$2b$") {
 		t.Fatalf("expected bcrypt hash prefix ($2a$ or $2b$), got: %s", hash)
@@ -21,6 +24,13 @@ func TestHashPasswordAndVerify(t *testing.T) {
 
 	if VerifyPassword("WrongPassword", hash) {
 		t.Fatalf("expected password verification to fail for wrong password")
+	}
+
+	// Fix R05: Test that passwords > 72 bytes return an error and do NOT fallback to SHA-256
+	longPassword := strings.Repeat("a", 73)
+	_, err = HashPassword(longPassword)
+	if err == nil {
+		t.Fatalf("expected error for password > 72 bytes, got nil")
 	}
 }
 

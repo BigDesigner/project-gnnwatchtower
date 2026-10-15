@@ -267,6 +267,14 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 		location = "Merkez Sistem Odası"
 	}
 
+	escComp := html.EscapeString(company)
+	escLoc := html.EscapeString(location)
+	escType := html.EscapeString(alertType)
+	escDev := html.EscapeString(devName)
+	escIP := html.EscapeString(ip)
+	escTime := html.EscapeString(timestamp)
+	escDetail := html.EscapeString(detail)
+
 	subject := fmt.Sprintf("[%s] [%s] %s (%s)", company, alertType, devName, ip)
 	htmlBody := fmt.Sprintf(`
 		<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 6px; background-color: #ffffff;">
@@ -285,7 +293,7 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 			</div>
 			<p style="color: #94a3b8; font-size: 12px; margin: 0;">Bu e-posta GNNwatchtower tarafından otomatik olarak oluşturulmuştur.</p>
 		</div>
-	`, company, location, alertType, devName, ip, timestamp, detail)
+	`, escComp, escLoc, escType, escDev, escIP, escTime, escDetail)
 
 	payload := map[string]interface{}{
 		"sender": map[string]string{

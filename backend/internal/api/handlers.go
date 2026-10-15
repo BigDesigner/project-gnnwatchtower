@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -728,6 +730,17 @@ func UpdateSettings(c *gin.Context) {
 			continue
 		}
 
+		if k == "agent_enrollment_key" {
+			strVal = strings.TrimSpace(strVal)
+			if strVal != "" {
+				matched, _ := regexp.MatchString(`^[a-zA-Z0-9_\-]{16,64}$`, strVal)
+				if !matched {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Ajan kayıt anahtarı yalnızca 16-64 karakter alfanümerik, tire ve alt çizgi içerebilir."})
+					return
+				}
+			}
+		}
+
 		if _, err := stmt.Exec(k, strVal); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ayar kaydedilemedi: " + err.Error()})
 			return
@@ -870,33 +883,45 @@ func AgentEnroll(c *gin.Context) {
 		return
 	}
 
-	// Validate Agent Enrollment Key
+	// Validate Agent Enrollment Key (Fail-closed)
 	var serverEnrollKey string
 	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&serverEnrollKey)
+	serverEnrollKey = strings.TrimSpace(serverEnrollKey)
 
-	reqEnrollKey := c.GetHeader("X-Enrollment-Key")
+	reqEnrollKey := strings.TrimSpace(c.GetHeader("X-Enrollment-Key"))
 	if reqEnrollKey == "" {
-		reqEnrollKey = req.EnrollmentKey
+		reqEnrollKey = strings.TrimSpace(req.EnrollmentKey)
 	}
 
-	if serverEnrollKey != "" && (reqEnrollKey == "" || reqEnrollKey != serverEnrollKey) {
+	if serverEnrollKey == "" || reqEnrollKey == "" || reqEnrollKey != serverEnrollKey {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz veya eksik ajan kayıt anahtarı (Enrollment Key)"})
 		return
 	}
 
 	clientIP := c.ClientIP()
-	targetIP := req.LocalIP
+	targetIP := strings.TrimSpace(req.LocalIP)
 	if targetIP == "" || targetIP == "127.0.0.1" || strings.HasPrefix(targetIP, "127.") || targetIP == "::1" {
 		targetIP = clientIP
 	}
+
+	// Fix R06: Ensure targetIP is a valid IP address literal (strictly reject URLs, loopback or unparseable formats)
+	parsedIP := net.ParseIP(targetIP)
+	if parsedIP == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz IP adresi biçimi. Yalnızca geçerli IPv4 veya IPv6 adresleri kabul edilir."})
+		return
+	}
+	targetIP = parsedIP.String()
 
 	tokenBytes := make([]byte, 32)
 	_, _ = rand.Read(tokenBytes)
 	agentToken := hex.EncodeToString(tokenBytes)
 
-	name := req.Hostname
+	name := strings.TrimSpace(req.Hostname)
 	if name == "" {
 		name = "Agent-" + targetIP
+	}
+	if len(name) > 64 {
+		name = name[:64]
 	}
 
 	devType := "linux"
@@ -932,6 +957,24 @@ func AgentEnroll(c *gin.Context) {
 	}
 
 	if devID > 0 {
+		// Fix R01: Prevent rogue device hijacking and token overwrites.
+		// If the device already has an active enrolled token, re-enrollment requires presenting the current token!
+		var currentToken string
+		_ = database.DB.QueryRow("SELECT agent_token FROM devices WHERE id = $1", devID).Scan(&currentToken)
+		currentToken = strings.TrimSpace(currentToken)
+
+		reqAgentToken := strings.TrimSpace(c.GetHeader("X-Agent-Token"))
+		if reqAgentToken == "" {
+			reqAgentToken = strings.TrimSpace(req.AgentToken)
+		}
+
+		if currentToken != "" && reqAgentToken != currentToken {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "Bu cihaz zaten kayıtlıdır. Mevcut cihazın ajan anahtarını yenilemek için geçerli X-Agent-Token sunulmalıdır.",
+			})
+			return
+		}
+
 		// Existing device enrolled!
 		_, _ = database.DB.Exec(`
 			UPDATE devices 
@@ -1238,21 +1281,39 @@ func getBinaryChecksum(platform string) string {
 
 // GenerateLinuxAgentScript outputs bash script for 1-click curl install on Ubuntu/Debian
 func GenerateLinuxAgentScript(c *gin.Context) {
-	host := c.Request.Host
+	proto := c.GetHeader("X-Forwarded-Proto")
 	scheme := "http"
-	if c.Request.TLS != nil {
+	if proto == "https" || c.Request.TLS != nil {
 		scheme = "https"
 	}
-	serverURL := fmt.Sprintf("%s://%s", scheme, host)
+
+	rawHost := c.Request.Host
+	cleanHost := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == ':' || r == '-' {
+			return r
+		}
+		return -1
+	}, rawHost)
+	if cleanHost == "" {
+		cleanHost = "127.0.0.1:3800"
+	}
+	serverURL := fmt.Sprintf("%s://%s", scheme, cleanHost)
 
 	var enrollKey string
 	if database.DB != nil {
 		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&enrollKey)
 	}
 
+	cleanEnrollKey := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return -1
+	}, enrollKey)
+
 	enrollFlag := ""
-	if enrollKey != "" {
-		enrollFlag = fmt.Sprintf(" -enroll-key \"%s\"", enrollKey)
+	if cleanEnrollKey != "" {
+		enrollFlag = fmt.Sprintf(" -enroll-key '%s'", cleanEnrollKey)
 	}
 
 	script := fmt.Sprintf(`#!/usr/bin/env bash
@@ -1262,7 +1323,7 @@ func GenerateLinuxAgentScript(c *gin.Context) {
 # ==============================================================================
 set -euo pipefail
 
-SERVER_URL="%s"
+SERVER_URL='%s'
 INSTALL_DIR="/opt/gnnwatchtower-agent"
 BIN_TARGET="$INSTALL_DIR/gnnwatchtower-agent"
 
@@ -1307,21 +1368,39 @@ echo "[GNNwatchtower] Ajan basariyla kuruldu, otomatik olarak kaydoldu (Auto-Enr
 
 // GenerateWindowsAgentScript outputs enterprise powershell script for Windows Server
 func GenerateWindowsAgentScript(c *gin.Context) {
-	host := c.Request.Host
+	proto := c.GetHeader("X-Forwarded-Proto")
 	scheme := "http"
-	if c.Request.TLS != nil {
+	if proto == "https" || c.Request.TLS != nil {
 		scheme = "https"
 	}
-	serverURL := fmt.Sprintf("%s://%s", scheme, host)
+
+	rawHost := c.Request.Host
+	cleanHost := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == ':' || r == '-' {
+			return r
+		}
+		return -1
+	}, rawHost)
+	if cleanHost == "" {
+		cleanHost = "127.0.0.1:3800"
+	}
+	serverURL := fmt.Sprintf("%s://%s", scheme, cleanHost)
 
 	var enrollKey string
 	if database.DB != nil {
 		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&enrollKey)
 	}
 
+	cleanEnrollKey := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return -1
+	}, enrollKey)
+
 	enrollFlag := ""
-	if enrollKey != "" {
-		enrollFlag = fmt.Sprintf(" -enroll-key \"%s\"", enrollKey)
+	if cleanEnrollKey != "" {
+		enrollFlag = fmt.Sprintf(" -enroll-key '%s'", cleanEnrollKey)
 	}
 
 	ps1 := fmt.Sprintf(`$ErrorActionPreference = "Stop"

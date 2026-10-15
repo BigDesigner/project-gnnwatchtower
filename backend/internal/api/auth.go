@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -58,25 +59,13 @@ type loginAttempt struct {
 
 var (
 	loginAttempts = make(map[string]*loginAttempt)
+	userAttempts  = make(map[string]*loginAttempt)
 	attemptsMu    sync.Mutex
 )
 
 // Login handles operator login with rate limiting and transparent bcrypt migration
 func Login(c *gin.Context) {
 	ip := c.ClientIP()
-
-	attemptsMu.Lock()
-	if att, exists := loginAttempts[ip]; exists {
-		if time.Now().Before(att.lockedUntil) {
-			remaining := int(time.Until(att.lockedUntil).Seconds())
-			attemptsMu.Unlock()
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error": fmt.Sprintf("Çok fazla hatalı giriş denemesi. Lütfen %d saniye bekleyin.", remaining),
-			})
-			return
-		}
-	}
-	attemptsMu.Unlock()
 
 	var input struct {
 		Username string `json:"username" binding:"required"`
@@ -87,6 +76,31 @@ func Login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Kullanıcı adı ve şifre zorunludur"})
 		return
 	}
+
+	attemptsMu.Lock()
+	// Fix R04: Check IP attempt limit
+	if att, exists := loginAttempts[ip]; exists {
+		if time.Now().Before(att.lockedUntil) {
+			remaining := int(time.Until(att.lockedUntil).Seconds())
+			attemptsMu.Unlock()
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error": fmt.Sprintf("Çok fazla hatalı giriş denemesi. Lütfen %d saniye bekleyin.", remaining),
+			})
+			return
+		}
+	}
+	// Fix R04: Check Username attempt limit (prevents IP rotation bypass)
+	if uAtt, exists := userAttempts[input.Username]; exists {
+		if time.Now().Before(uAtt.lockedUntil) {
+			remaining := int(time.Until(uAtt.lockedUntil).Seconds())
+			attemptsMu.Unlock()
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error": fmt.Sprintf("Bu hesap için çok fazla hatalı giriş denemesi yapıldı. Lütfen %d saniye bekleyin.", remaining),
+			})
+			return
+		}
+	}
+	attemptsMu.Unlock()
 
 	if database.DB == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Veritabanı hazır değil"})
@@ -113,21 +127,34 @@ func Login(c *gin.Context) {
 		if att.failedCount >= 5 {
 			att.lockedUntil = time.Now().Add(5 * time.Minute)
 		}
+
+		uAtt := userAttempts[input.Username]
+		if uAtt == nil {
+			uAtt = &loginAttempt{}
+			userAttempts[input.Username] = uAtt
+		}
+		uAtt.failedCount++
+		if uAtt.failedCount >= 5 {
+			uAtt.lockedUntil = time.Now().Add(5 * time.Minute)
+		}
 		attemptsMu.Unlock()
 
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Hatalı kullanıcı adı veya şifre"})
 		return
 	}
 
-	// Login successful - clear failed attempts for this IP
+	// Login successful - clear failed attempts for this IP and username
 	attemptsMu.Lock()
 	delete(loginAttempts, ip)
+	delete(userAttempts, input.Username)
 	attemptsMu.Unlock()
 
 	// Transparently upgrade legacy SHA-256 hash to bcrypt
 	if !strings.HasPrefix(storedHash, "$2a$") && !strings.HasPrefix(storedHash, "$2b$") && !strings.HasPrefix(storedHash, "$2y$") {
-		newBcryptHash := database.HashPassword(input.Password)
-		_, _ = database.DB.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", newBcryptHash, id)
+		newBcryptHash, hErr := database.HashPassword(input.Password)
+		if hErr == nil {
+			_, _ = database.DB.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", newBcryptHash, id)
+		}
 	}
 
 	// If password was default 'admin', ensure must_change_password = 1
@@ -179,6 +206,17 @@ func GetCurrentUser(c *gin.Context) {
 	})
 }
 
+// Logout invalidates the active bearer token on the server
+func Logout(c *gin.Context) {
+	token := c.GetString("token")
+	if token != "" {
+		sessionsMu.Lock()
+		delete(activeSessions, token)
+		sessionsMu.Unlock()
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Oturum başarıyla sonlandırıldı."})
+}
+
 // ChangePassword allows operator to update their password
 func ChangePassword(c *gin.Context) {
 	var input struct {
@@ -193,6 +231,12 @@ func ChangePassword(c *gin.Context) {
 
 	if len(input.NewPassword) < 8 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Yeni şifre en az 8 karakter olmalıdır"})
+		return
+	}
+
+	// Fix R05: Enforce max 72 bytes length for bcrypt safely
+	if len([]byte(input.NewPassword)) > 72 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Yeni şifre en fazla 72 bayt uzunluğunda olabilir"})
 		return
 	}
 
@@ -214,20 +258,34 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	newHash := database.HashPassword(input.NewPassword)
+	newHash, err := database.HashPassword(input.NewPassword)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	_, err = database.DB.Exec("UPDATE users SET password_hash = $1, must_change_password = 0 WHERE id = $2", newHash, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Şifre güncellenemedi"})
 		return
 	}
 
-	// Invalidate must_change_password for the active session in memory
+	// Clean up initial bootstrap password file if it exists
+	_ = os.Remove("./data/initial_admin_password.txt")
+
+	// Fix R08: Revoke all other active sessions for this user except current session
 	token := c.GetString("token")
 	if token != "" {
 		sessionsMu.Lock()
-		if sess, ok := activeSessions[token]; ok {
-			sess.MustChangePassword = false
-			activeSessions[token] = sess
+		for tok, sess := range activeSessions {
+			if sess.Username == username {
+				if tok == token {
+					sess.MustChangePassword = false
+					activeSessions[tok] = sess
+				} else {
+					delete(activeSessions, tok)
+				}
+			}
 		}
 		sessionsMu.Unlock()
 	}

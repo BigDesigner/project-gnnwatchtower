@@ -256,7 +256,7 @@ func StartDailyBackupScheduler(backupDir string) {
 	if backupDir == "" {
 		backupDir = "./backups"
 	}
-	_ = os.MkdirAll(backupDir, 0755)
+	_ = os.MkdirAll(backupDir, 0700)
 
 	go func() {
 		ticker := time.NewTicker(30 * time.Minute)
@@ -271,8 +271,8 @@ func StartDailyBackupScheduler(backupDir string) {
 					bundle, err := ExportAll()
 					if err == nil {
 						data, _ := json.MarshalIndent(bundle, "", "  ")
-						_ = os.WriteFile(filename, data, 0644)
-						log.Printf("[Backup Engine] Automated daily backup saved to %s", filename)
+						_ = os.WriteFile(filename, data, 0600)
+						log.Printf("[Backup Engine] Automated daily backup saved to %s (permissions: 0600)", filename)
 						cleanOldBackups(backupDir, 30*24*time.Hour)
 					}
 				}

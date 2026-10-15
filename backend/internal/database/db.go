@@ -224,16 +224,31 @@ func migrateSchema(db *sql.DB) error {
 		log.Printf("[GNNwatchtower Security] Initialized Agent Enrollment Key: %s...", enrollKey[:8])
 	}
 
-	// Create default admin user if no users exist (admin / admin, must change password)
+	// Create initial admin user if no users exist
 	var count int
 	_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
 	if count == 0 {
-		hash := HashPassword("admin")
-		_, _ = db.Exec("INSERT INTO users (username, password_hash, role, must_change_password) VALUES ('admin', $1, 'admin', 1)", hash)
-		log.Println("[GNNwatchtower Auth] Initial admin account initialized. Mandatory password change is ACTIVE.")
+		initPass := os.Getenv("INITIAL_ADMIN_PASSWORD")
+		if initPass == "" {
+			pBytes := make([]byte, 12)
+			_, _ = rand.Read(pBytes)
+			initPass = hex.EncodeToString(pBytes) // 24-character random password
+		}
+		hash, err := HashPassword(initPass)
+		if err == nil {
+			_, _ = db.Exec("INSERT INTO users (username, password_hash, role, must_change_password) VALUES ('admin', $1, 'admin', 1)", hash)
+
+			// Save initial bootstrap password to local file with 0600 permissions
+			passFile := "./data/initial_admin_password.txt"
+			_ = os.WriteFile(passFile, []byte(initPass+"\n"), 0600)
+			log.Printf("[GNNwatchtower Security] =================================================================")
+			log.Printf("[GNNwatchtower Security] INITIAL ADMIN PASSWORD GENERATED: %s", initPass)
+			log.Printf("[GNNwatchtower Security] Saved to %s (permissions: 0600).", passFile)
+			log.Printf("[GNNwatchtower Security] =================================================================")
+		}
 	}
 
-	// Force must_change_password = 1 for admin account if password is still default 'admin'
+	// Force must_change_password = 1 for admin account if password is still legacy 'admin'
 	var adminHash string
 	if err := db.QueryRow("SELECT password_hash FROM users WHERE username = 'admin'").Scan(&adminHash); err == nil {
 		if VerifyPassword("admin", adminHash) {
@@ -246,14 +261,15 @@ func migrateSchema(db *sql.DB) error {
 }
 
 // HashPassword calculates secure bcrypt hash with cost 12
-func HashPassword(password string) string {
+func HashPassword(password string) (string, error) {
+	if len([]byte(password)) > 72 {
+		return "", fmt.Errorf("parola 72 bayttan uzun olamaz (bcrypt sınırı)")
+	}
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
-		h := sha256.New()
-		h.Write([]byte(password + "_gnnwatchtower_salt_2026"))
-		return hex.EncodeToString(h.Sum(nil))
+		return "", fmt.Errorf("parola hash üretilemedi: %w", err)
 	}
-	return string(bytes)
+	return string(bytes), nil
 }
 
 // VerifyPassword checks candidate password against bcrypt or legacy SHA-256 hash
@@ -261,7 +277,7 @@ func VerifyPassword(password, hash string) bool {
 	if strings.HasPrefix(hash, "$2a$") || strings.HasPrefix(hash, "$2b$") || strings.HasPrefix(hash, "$2y$") {
 		return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 	}
-	// Fallback for legacy SHA-256 hash
+	// Fallback only for existing legacy SHA-256 hash during migration
 	h := sha256.New()
 	h.Write([]byte(password + "_gnnwatchtower_salt_2026"))
 	return hex.EncodeToString(h.Sum(nil)) == hash

@@ -52,9 +52,15 @@ export default {
     })
     return res.data
   },
-  logout() {
-    localStorage.removeItem('gnn_token')
-    window.dispatchEvent(new CustomEvent('gnn-auth-failed'))
+  async logout() {
+    try {
+      await client.post('/auth/logout')
+    } catch {
+      // Ignore network errors or already invalidated token
+    } finally {
+      localStorage.removeItem('gnn_token')
+      window.dispatchEvent(new CustomEvent('gnn-auth-failed'))
+    }
   },
 
   // Dashboard & System Telemetry

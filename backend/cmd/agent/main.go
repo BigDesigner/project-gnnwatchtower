@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -126,15 +127,29 @@ func loadAgentKey() string {
 	return ""
 }
 
+func secureFilePermissions(path string) {
+	if runtime.GOOS == "windows" {
+		// Fix R11: Strip inherited ACLs and grant Full Control only to SYSTEM and Administrators
+		cmd := exec.Command("icacls.exe", path, "/inheritance:r", "/grant:r", "SYSTEM:(F)", "/grant:r", "Administrators:(F)")
+		_ = cmd.Run()
+	} else {
+		_ = os.Chmod(path, 0600)
+	}
+}
+
 func saveAgentKey(token string) error {
 	keyPath := getAgentKeyPath()
 	dir := os.Getenv("ProgramFiles")
 	if dir != "" && runtime.GOOS == "windows" {
-		_ = os.MkdirAll(fmt.Sprintf("%s\\GNNwatchtower-Agent", dir), 0755)
+		_ = os.MkdirAll(fmt.Sprintf("%s\\GNNwatchtower-Agent", dir), 0700)
 	} else if runtime.GOOS == "linux" {
-		_ = os.MkdirAll("/opt/gnnwatchtower-agent", 0755)
+		_ = os.MkdirAll("/opt/gnnwatchtower-agent", 0700)
 	}
-	return os.WriteFile(keyPath, []byte(token), 0600)
+	err := os.WriteFile(keyPath, []byte(token), 0600)
+	if err == nil {
+		secureFilePermissions(keyPath)
+	}
+	return err
 }
 
 func loadEnrollKey() string {
@@ -157,11 +172,15 @@ func saveEnrollKey(key string) error {
 	keyPath := getEnrollKeyPath()
 	dir := os.Getenv("ProgramFiles")
 	if dir != "" && runtime.GOOS == "windows" {
-		_ = os.MkdirAll(fmt.Sprintf("%s\\GNNwatchtower-Agent", dir), 0755)
+		_ = os.MkdirAll(fmt.Sprintf("%s\\GNNwatchtower-Agent", dir), 0700)
 	} else if runtime.GOOS == "linux" {
-		_ = os.MkdirAll("/opt/gnnwatchtower-agent", 0755)
+		_ = os.MkdirAll("/opt/gnnwatchtower-agent", 0700)
 	}
-	return os.WriteFile(keyPath, []byte(k), 0600)
+	err := os.WriteFile(keyPath, []byte(k), 0600)
+	if err == nil {
+		secureFilePermissions(keyPath)
+	}
+	return err
 }
 
 func autoEnroll(serverURL, enrollKey string) (string, error) {
@@ -522,10 +541,35 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 		fullDownloadURL = cleanServerURL + fullDownloadURL
 	}
 
-	// Security Guard: Strict Appliance Pinning (reject unauthorized external domains)
-	if !strings.HasPrefix(fullDownloadURL, cleanServerURL) {
+	// Fix R03: Parse URLs and enforce strict origin pinning (scheme, host, port must match exactly)
+	parsedServer, sErr := url.Parse(cleanServerURL)
+	if sErr != nil || parsedServer.Host == "" {
+		setUpgradeState("failed", "Guvenlik: Gecersiz sunucu adresi")
+		logToFile("[HATA] Guvenlik: Gecersiz sunucu adresi")
+		_, _ = sendHeartbeat(serverURL, token, hostname)
+		return
+	}
+
+	parsedDownload, dErr := url.Parse(fullDownloadURL)
+	if dErr != nil || parsedDownload.Host == "" {
+		setUpgradeState("failed", "Guvenlik: Gecersiz indirme adresi")
+		logToFile("[HATA] Guvenlik: Gecersiz indirme adresi")
+		_, _ = sendHeartbeat(serverURL, token, hostname)
+		return
+	}
+
+	if !strings.EqualFold(parsedServer.Scheme, parsedDownload.Scheme) || !strings.EqualFold(parsedServer.Host, parsedDownload.Host) {
 		setUpgradeState("failed", "Guvenlik ihlali: Indirme adresi tanimli sunucu ile eslesmiyor")
-		logToFile("[HATA] Guvenlik: Gecersiz indirme URL'si reddedildi")
+		logToFile(fmt.Sprintf("[HATA] Guvenlik: Gecersiz indirme origin: %s != %s", parsedDownload.Host, parsedServer.Host))
+		_, _ = sendHeartbeat(serverURL, token, hostname)
+		return
+	}
+
+	// Fix R03: Enforce mandatory 64-char SHA-256 (no empty checksum bypass)
+	cleanExpectedSHA := strings.ToLower(strings.TrimSpace(expectedSHA256))
+	if len(cleanExpectedSHA) != 64 {
+		setUpgradeState("failed", "Guvenlik ihlali: Guncelleme paketi resmi SHA-256 ozeti icermiyor veya gecersiz")
+		logToFile("[HATA] Guvenlik: 64-karakter SHA-256 ozeti eksik veya gecersiz")
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
@@ -533,7 +577,19 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 	tmpFile := exePath + ".update"
 	_ = os.Remove(tmpFile)
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	// Fix R03: Validate redirects to ensure download cannot be redirected to another domain
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if !strings.EqualFold(req.URL.Host, parsedServer.Host) || !strings.EqualFold(req.URL.Scheme, parsedServer.Scheme) {
+				return fmt.Errorf("guvenlik: harici yonlendirme reddedildi (%s)", req.URL.Host)
+			}
+			if len(via) >= 5 {
+				return fmt.Errorf("cok fazla yonlendirme")
+			}
+			return nil
+		},
+	}
 	resp, err := client.Get(fullDownloadURL)
 	if err != nil {
 		setUpgradeState("failed", fmt.Sprintf("Download error: %v", err))
@@ -573,10 +629,10 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 
 	// Verify SHA-256 Checksum (MANDATORY SECURITY INVARIANT)
 	computedSHA := hex.EncodeToString(hasher.Sum(nil))
-	if expectedSHA256 != "" && !strings.EqualFold(computedSHA, expectedSHA256) {
+	if !strings.EqualFold(computedSHA, cleanExpectedSHA) {
 		_ = os.Remove(tmpFile)
-		setUpgradeState("failed", fmt.Sprintf("SHA256 uyusmazligi! Beklenen: %s, Hesaplanan: %s", expectedSHA256, computedSHA))
-		logToFile(fmt.Sprintf("[HATA] SHA-256 uyusmazligi: beklenen %s, hesaplanan %s", expectedSHA256, computedSHA))
+		setUpgradeState("failed", fmt.Sprintf("SHA256 uyusmazligi! Beklenen: %s, Hesaplanan: %s", cleanExpectedSHA, computedSHA))
+		logToFile(fmt.Sprintf("[HATA] SHA-256 uyusmazligi: beklenen %s, hesaplanan %s", cleanExpectedSHA, computedSHA))
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		log.Printf("[HATA] Guncelleme ikili dosyasinin SHA256 ozeti dogrulanamadi!")
 		return

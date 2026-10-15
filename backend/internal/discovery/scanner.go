@@ -18,7 +18,18 @@ var commonPorts = []int{22, 80, 443, 902, 3389, 5000, 5001, 8080}
 func ScanSubnet(cidr string) ([]models.DiscoveryHost, error) {
 	ip, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid CIDR %s: %w", cidr, err)
+		return nil, fmt.Errorf("geçersiz CIDR biçimi (%s): %w", cidr, err)
+	}
+
+	// Fix R09: Reject IPv6 and limit subnet to max /22 (1024 hosts) to prevent memory exhaustion
+	if ip.To4() == nil {
+		return nil, fmt.Errorf("yalnızca IPv4 alt ağ taraması desteklenmektedir")
+	}
+
+	ones, bits := ipnet.Mask.Size()
+	hostBits := bits - ones
+	if hostBits > 10 {
+		return nil, fmt.Errorf("alt ağ çok geniş (2^%d host). Güvenlik ve performans nedeniyle en fazla /22 (1024 IP) taranabilir", hostBits)
 	}
 
 	var ips []net.IP

@@ -142,6 +142,7 @@ type AgentEnrollRequest struct {
 	Architecture  string `json:"arch"`
 	MachineUUID   string `json:"machine_uuid"`
 	AgentVersion  string `json:"agent_version"`
+	AgentToken    string `json:"agent_token,omitempty"`
 }
 
 // AgentEnrollResponse represents enrollment approval and token credentials

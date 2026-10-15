@@ -26,6 +26,8 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// Fix R04: Do not trust arbitrary X-Forwarded-For headers from untrusted direct connections
+	_ = r.SetTrustedProxies(nil)
 
 	// Relaxed CORS for dev and embedded production
 	corsConfig := cors.DefaultConfig()
@@ -50,17 +52,20 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 		api.POST("/auth/login", MaxBodySizeMiddleware(64*1024), Login)
 		api.POST("/agent/enroll", MaxBodySizeMiddleware(256*1024), AgentEnroll)
 		api.POST("/agent/report", MaxBodySizeMiddleware(1024*1024), AgentHeartbeat)
-		api.GET("/agent/install/linux", GenerateLinuxAgentScript)
-		api.GET("/agent/install/windows", GenerateWindowsAgentScript)
 		api.GET("/agent/download/:platform", DownloadAgentBinary)
 
-		// Protected Routes
+		// Protected Routes (Authentication Required)
 		protected := api.Group("")
 		protected.Use(AuthMiddleware())
 		{
 			protected.GET("/auth/me", GetCurrentUser)
+			protected.POST("/auth/logout", Logout)
 			protected.POST("/auth/change-password", ChangePassword)
 			protected.GET("/dashboard/stats", GetDashboardStats)
+
+			// Fix R01: Protect installation scripts containing fleet enrollment keys
+			protected.GET("/agent/install/linux", GenerateLinuxAgentScript)
+			protected.GET("/agent/install/windows", GenerateWindowsAgentScript)
 
 			// Agent Remote Upgrade Orchestration
 			protected.POST("/agent/:id/upgrade", TriggerAgentUpgrade)

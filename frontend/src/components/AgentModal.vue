@@ -173,7 +173,8 @@ const hostUrl = computed(() => {
 })
 
 const linuxCmd = computed(() => {
-  return `curl -sSL ${hostUrl.value}/api/agent/install/linux | sudo bash`
+  const enrollFlag = enrollmentKey.value ? ` -enroll-key '${enrollmentKey.value}'` : ''
+  return `sudo mkdir -p /opt/gnnwatchtower-agent && cd /opt/gnnwatchtower-agent && sudo curl -fsSL "${hostUrl.value}/api/agent/download/linux" -o gnnwatchtower-agent && sudo chmod 755 gnnwatchtower-agent && sudo ./gnnwatchtower-agent -service install -server "${hostUrl.value}"${enrollFlag} && sudo ./gnnwatchtower-agent -service start`
 })
 
 const winCmd = computed(() => {

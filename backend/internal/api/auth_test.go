@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -60,8 +62,11 @@ func TestLoginRateLimiter(t *testing.T) {
 }
 
 func TestMandatoryPasswordChangeFlow(t *testing.T) {
+	t.Setenv("INITIAL_ADMIN_PASSWORD", "test-initial-pass-123")
+
 	attemptsMu.Lock()
 	loginAttempts = make(map[string]*loginAttempt)
+	userAttempts = make(map[string]*loginAttempt)
 	attemptsMu.Unlock()
 
 	db, err := database.InitDB(":memory:")
@@ -85,7 +90,7 @@ func TestMandatoryPasswordChangeFlow(t *testing.T) {
 	}
 
 	// 1. Login with initial admin credentials
-	loginBody := bytes.NewBufferString(`{"username":"admin","password":"admin"}`)
+	loginBody := bytes.NewBufferString(`{"username":"admin","password":"test-initial-pass-123"}`)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/api/auth/login", loginBody)
 	req.Header.Set("Content-Type", "application/json")
@@ -130,7 +135,7 @@ func TestMandatoryPasswordChangeFlow(t *testing.T) {
 
 	// 4. Attempting to change to 'admin' again must be rejected with 400
 	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("POST", "/api/auth/change-password", bytes.NewBufferString(`{"current_password":"admin","new_password":"admin"}`))
+	req, _ = http.NewRequest("POST", "/api/auth/change-password", bytes.NewBufferString(`{"current_password":"test-initial-pass-123","new_password":"admin"}`))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
@@ -141,7 +146,7 @@ func TestMandatoryPasswordChangeFlow(t *testing.T) {
 
 	// 5. Change password to secure password
 	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("POST", "/api/auth/change-password", bytes.NewBufferString(`{"current_password":"admin","new_password":"SecurePassword123!"}`))
+	req, _ = http.NewRequest("POST", "/api/auth/change-password", bytes.NewBufferString(`{"current_password":"test-initial-pass-123","new_password":"SecurePassword123!"}`))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
@@ -160,3 +165,91 @@ func TestMandatoryPasswordChangeFlow(t *testing.T) {
 		t.Fatalf("expected 200 OK after password change, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestUsernameRateLimiting(t *testing.T) {
+	attemptsMu.Lock()
+	loginAttempts = make(map[string]*loginAttempt)
+	userAttempts = make(map[string]*loginAttempt)
+	attemptsMu.Unlock()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/api/auth/login", Login)
+
+	targetUser := "test_lockout_user"
+
+	// Simulate 5 failed attempts from different IPs for the same username
+	for i := 1; i <= 5; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/auth/login", bytes.NewBufferString(fmt.Sprintf(`{"username":"%s","password":"wrongpassword"}`, targetUser)))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = fmt.Sprintf("192.168.10.%d:12345", i)
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401 Unauthorized, got %d", i, w.Code)
+		}
+	}
+
+	// 6th attempt from a brand new IP for that username should receive 429 Too Many Requests
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/auth/login", bytes.NewBufferString(fmt.Sprintf(`{"username":"%s","password":"wrongpassword"}`, targetUser)))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.99.99.99:12345"
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests due to username lockout, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLogoutRevocation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	protected := r.Group("/api")
+	protected.Use(AuthMiddleware())
+	{
+		protected.POST("/auth/logout", Logout)
+		protected.GET("/test-auth", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		})
+	}
+
+	testToken := "test-session-token-xyz"
+	sessionsMu.Lock()
+	activeSessions[testToken] = sessionInfo{
+		Username:           "admin",
+		ExpiresAt:          time.Now().Add(1 * time.Hour),
+		MustChangePassword: false,
+	}
+	sessionsMu.Unlock()
+
+	// 1. Verify access works before logout
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/test-auth", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 before logout, got %d", w.Code)
+	}
+
+	// 2. Perform Logout
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("POST", "/api/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on logout, got %d", w.Code)
+	}
+
+	// 3. Verify session token is invalidated
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("GET", "/api/test-auth", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after logout, got %d", w.Code)
+	}
+}
+
