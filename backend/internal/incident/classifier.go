@@ -111,15 +111,16 @@ func FormatTelegramAlert(company, location, device, ip, alertType, detail, times
 	}
 
 	return fmt.Sprintf(
-`🏢 <b>MÜŞTERİ: %s</b>%s
-🚨 <b>BİLDİRİM: %s</b>
+`<b>[GNNWATCHTOWER ALTYAPI BİLDİRİMİ]</b>
+<b>MÜŞTERİ: %s</b>%s
+<b>BİLDİRİM: %s</b>
 
 <pre>
 %s
 </pre>
-📋 <b>Detay:</b> %s
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🛡️ <i>GNNwatchtower Appliance v%s</i>`,
+<b>Detay:</b> %s
+────────────────────────────────────
+<i>GNNwatchtower Enterprise Appliance v%s</i>`,
 		escapedComp, locStr, escapedType, escapedTable, escapedDetail, version.Get(),
 	)
 }
@@ -144,22 +145,22 @@ func FormatDiscordAlert(company, location, device, ip, alertType, detail, timest
 	}
 
 	payload := map[string]interface{}{
-		"content": fmt.Sprintf("🚨 **[GNNwatchtower v%s] %s Bildirimi** — **%s**", version.Get(), alertType, company),
+		"content": fmt.Sprintf("**[GNNwatchtower v%s] %s Bildirimi** — **%s**", version.Get(), alertType, company),
 		"embeds": []map[string]interface{}{
 			{
 				"title": fmt.Sprintf("[%s] %s (%s)", alertType, device, ip),
 				"description": fmt.Sprintf("```\n%s\n```\n**Detay:** %s", table, detail),
 				"color": color,
 				"fields": []map[string]interface{}{
-					{"name": "🏢 Müşteri Şirketi", "value": fmt.Sprintf("**%s**", company), "inline": true},
-					{"name": "📍 Lokasyon / Şube", "value": locDisplay, "inline": true},
-					{"name": "⚠️ Olay Türü", "value": fmt.Sprintf("`%s`", alertType), "inline": true},
-					{"name": "🖥️ Cihaz Adı", "value": fmt.Sprintf("`%s`", device), "inline": true},
-					{"name": "🌐 IP Adresi", "value": fmt.Sprintf("`%s`", ip), "inline": true},
-					{"name": "⏰ Zaman", "value": timestamp, "inline": true},
+					{"name": "Müşteri Şirketi", "value": fmt.Sprintf("**%s**", company), "inline": true},
+					{"name": "Lokasyon / Şube", "value": locDisplay, "inline": true},
+					{"name": "Olay Türü", "value": fmt.Sprintf("`%s`", alertType), "inline": true},
+					{"name": "Cihaz Adı", "value": fmt.Sprintf("`%s`", device), "inline": true},
+					{"name": "IP Adresi", "value": fmt.Sprintf("`%s`", ip), "inline": true},
+					{"name": "Zaman", "value": timestamp, "inline": true},
 				},
 				"footer": map[string]string{
-					"text": fmt.Sprintf("GNNwatchtower Appliance v%s • %s", version.Get(), company),
+					"text": fmt.Sprintf("GNNwatchtower Enterprise Appliance v%s • %s", version.Get(), company),
 				},
 			},
 		},
