@@ -101,6 +101,15 @@ func runAsWindowsService(serverURL, token string, interval int) error {
 	})
 }
 
+func runWindowsServiceIfUnderSCM(serverURL, token string, intervalSec int) bool {
+	isService, err := svc.IsWindowsService()
+	if err == nil && isService {
+		_ = runAsWindowsService(serverURL, token, intervalSec)
+		return true
+	}
+	return false
+}
+
 func handleServiceCommand(cmd, serverURL, token string) bool {
 	switch strings.ToLower(cmd) {
 	case "install":

@@ -20,8 +20,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/windows/svc"
 )
 
 type ServerHeartbeatResponse struct {
@@ -213,12 +211,8 @@ func main() {
 	}
 
 	// 2. Windows Service Control Manager runtime check
-	if runtime.GOOS == "windows" {
-		isService, err := svc.IsWindowsService()
-		if err == nil && isService {
-			_ = runAsWindowsService(*serverURL, *token, *intervalSec)
-			return
-		}
+	if runWindowsServiceIfUnderSCM(*serverURL, *token, *intervalSec) {
+		return
 	}
 
 	// 3. Resolve agent token (CLI flag -> Local Key file -> Auto-Enrollment)

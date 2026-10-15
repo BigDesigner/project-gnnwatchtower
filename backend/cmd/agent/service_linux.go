@@ -15,6 +15,10 @@ func runAsWindowsService(serverURL, token string, interval int) error {
 	return fmt.Errorf("Windows Service yalnizca Windows isletim sistemlerinde calisir")
 }
 
+func runWindowsServiceIfUnderSCM(serverURL, token string, intervalSec int) bool {
+	return false
+}
+
 func logEvent(eventType uint32, msg string) {
 	log.Println(msg)
 }
