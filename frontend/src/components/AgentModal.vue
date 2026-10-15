@@ -168,18 +168,31 @@ watch(() => props.isOpen, (newVal) => {
   }
 }, { immediate: true })
 
-const hostUrl = computed(() => {
-  return window.location.origin
+const safeEnrollKey = computed(() => {
+  const k = (enrollmentKey.value || '').trim()
+  if (/^[a-zA-Z0-9_\-]{16,64}$/.test(k)) {
+    return k
+  }
+  return ''
 })
 
+const safeHostUrl = computed(() => {
+  const raw = window.location.origin || 'http://127.0.0.1:3800'
+  return raw.replace(/[^a-zA-Z0-9.:\-_/]/g, '')
+})
+
+const hostUrl = safeHostUrl
+
 const linuxCmd = computed(() => {
-  const enrollFlag = enrollmentKey.value ? ` -enroll-key '${enrollmentKey.value}'` : ''
-  return `sudo mkdir -p /opt/gnnwatchtower-agent && cd /opt/gnnwatchtower-agent && sudo curl -fsSL "${hostUrl.value}/api/agent/download/linux" -o gnnwatchtower-agent && sudo chmod 755 gnnwatchtower-agent && sudo ./gnnwatchtower-agent -service install -server "${hostUrl.value}"${enrollFlag} && sudo ./gnnwatchtower-agent -service start`
+  const key = safeEnrollKey.value
+  const enrollFlag = key ? ` -enroll-key '${key}'` : ''
+  return `sudo mkdir -p /opt/gnnwatchtower-agent && cd /opt/gnnwatchtower-agent && sudo curl -fsSL '${safeHostUrl.value}/api/agent/download/linux' -o gnnwatchtower-agent && sudo chmod 755 gnnwatchtower-agent && sudo ./gnnwatchtower-agent -service install -server '${safeHostUrl.value}'${enrollFlag} && sudo ./gnnwatchtower-agent -service start`
 })
 
 const winCmd = computed(() => {
-  const enrollFlag = enrollmentKey.value ? ` -enroll-key \\"${enrollmentKey.value}\\"` : ''
-  return `New-Item -ItemType Directory -Force -Path "C:\\Program Files\\GNNwatchtower-Agent"; Invoke-WebRequest -Uri "${hostUrl.value}/api/agent/download/windows" -OutFile "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe"; & "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe" -service install -server "${hostUrl.value}"${enrollFlag}; & "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe" -service start`
+  const key = safeEnrollKey.value
+  const enrollFlag = key ? ` -enroll-key '${key}'` : ''
+  return `New-Item -ItemType Directory -Force -Path 'C:\\Program Files\\GNNwatchtower-Agent'; Invoke-WebRequest -Uri '${safeHostUrl.value}/api/agent/download/windows' -OutFile 'C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe'; & 'C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe' -service install -server '${safeHostUrl.value}'${enrollFlag}; & 'C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe' -service start`
 })
 
 const copyText = async (text, type) => {

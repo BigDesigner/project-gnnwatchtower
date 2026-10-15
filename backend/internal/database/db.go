@@ -242,18 +242,30 @@ func migrateSchema(db *sql.DB) error {
 			passFile := "./data/initial_admin_password.txt"
 			_ = os.WriteFile(passFile, []byte(initPass+"\n"), 0600)
 			log.Printf("[GNNwatchtower Security] =================================================================")
-			log.Printf("[GNNwatchtower Security] INITIAL ADMIN PASSWORD GENERATED: %s", initPass)
-			log.Printf("[GNNwatchtower Security] Saved to %s (permissions: 0600).", passFile)
+			log.Printf("[GNNwatchtower Security] Initial administrator account provisioned.")
+			log.Printf("[GNNwatchtower Security] Bootstrap credential saved to %s (permissions: 0600).", passFile)
+			log.Printf("[GNNwatchtower Security] Mandatory password change is ENFORCED on first login.")
 			log.Printf("[GNNwatchtower Security] =================================================================")
 		}
 	}
 
-	// Force must_change_password = 1 for admin account if password is still legacy 'admin'
+	// Fix V03: If admin account still has legacy default password 'admin',
+	// ROTATE it immediately to an unguessable password to eliminate the first-claim takeover race!
 	var adminHash string
 	if err := db.QueryRow("SELECT password_hash FROM users WHERE username = 'admin'").Scan(&adminHash); err == nil {
 		if VerifyPassword("admin", adminHash) {
-			_, _ = db.Exec("UPDATE users SET must_change_password = 1 WHERE username = 'admin'")
-			log.Println("[GNNwatchtower Security] Default admin password detected. Mandatory password change is ENFORCED.")
+			pBytes := make([]byte, 12)
+			_, _ = rand.Read(pBytes)
+			rotatedPass := hex.EncodeToString(pBytes)
+			if newHash, hErr := HashPassword(rotatedPass); hErr == nil {
+				_, _ = db.Exec("UPDATE users SET password_hash = $1, must_change_password = 1 WHERE username = 'admin'", newHash)
+				passFile := "./data/initial_admin_password.txt"
+				_ = os.WriteFile(passFile, []byte(rotatedPass+"\n"), 0600)
+				log.Printf("[GNNwatchtower Security] =================================================================")
+				log.Printf("[GNNwatchtower Security] Legacy default 'admin' password detected and ROTATED.")
+				log.Printf("[GNNwatchtower Security] New secure password written to %s (permissions: 0600).", passFile)
+				log.Printf("[GNNwatchtower Security] =================================================================")
+			}
 		}
 	}
 

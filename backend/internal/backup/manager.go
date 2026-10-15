@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"gnnwatchtower/internal/database"
@@ -166,7 +168,15 @@ func ImportAll(data []byte) error {
 	defer tx.Rollback()
 
 	// 1. Restore Settings
+	keyRegex := regexp.MustCompile(`^[a-zA-Z0-9_\-]{16,64}$`)
 	for _, s := range bundle.Settings {
+		// Fix V02: Enforce strict format check on restored enrollment keys
+		if s.Key == "agent_enrollment_key" {
+			val := strings.TrimSpace(s.Value)
+			if val != "" && !keyRegex.MatchString(val) {
+				return fmt.Errorf("güvenlik ihlali: yedek paketindeki 'agent_enrollment_key' geçersiz veya güvensiz karakterler içeriyor")
+			}
+		}
 		_, err := tx.Exec(`
 			INSERT INTO system_settings (key, value, description, updated_at)
 			VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
@@ -251,12 +261,38 @@ func getServicesForDevice(devID int) []models.ServiceMonitored {
 	return list
 }
 
+// EnsureBackupPermissions enforces 0700 on backupDir and migrates all existing archives to 0600
+func EnsureBackupPermissions(backupDir string) error {
+	if backupDir == "" {
+		backupDir = "./backups"
+	}
+	if err := os.MkdirAll(backupDir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(backupDir, 0700); err != nil {
+		log.Printf("[Backup Engine] UYARI: Yedek dizini izinleri (0700) uygulanamadi: %v", err)
+	}
+
+	entries, err := os.ReadDir(backupDir)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				filePath := filepath.Join(backupDir, entry.Name())
+				if err := os.Chmod(filePath, 0600); err != nil {
+					log.Printf("[Backup Engine] UYARI: Eski yedek dosyasi (%s) 0600 yapilamadi: %v", filePath, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // StartDailyBackupScheduler runs background backup every day at 03:00 and keeps 30 days
 func StartDailyBackupScheduler(backupDir string) {
 	if backupDir == "" {
 		backupDir = "./backups"
 	}
-	_ = os.MkdirAll(backupDir, 0700)
+	_ = EnsureBackupPermissions(backupDir)
 
 	go func() {
 		ticker := time.NewTicker(30 * time.Minute)

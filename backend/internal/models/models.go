@@ -152,6 +152,7 @@ type AgentEnrollResponse struct {
 	DeviceID             int    `json:"device_id"`
 	CheckIntervalSeconds int    `json:"check_interval_seconds"`
 	ServerVersion        string `json:"server_version"`
+	UpdatePublicKey      string `json:"update_public_key,omitempty"`
 }
 
 // AgentUpgradeInstruction represents command payload sent in heartbeat response
@@ -161,6 +162,7 @@ type AgentUpgradeInstruction struct {
 	TargetVersion string `json:"target_version,omitempty"`
 	DownloadURL   string `json:"download_url,omitempty"`
 	SHA256        string `json:"sha256,omitempty"`
+	Signature     string `json:"signature,omitempty"`
 }
 
 // DiscoveryHost represents an auto-discovered network node

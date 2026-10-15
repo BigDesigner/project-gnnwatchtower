@@ -2,156 +2,113 @@
 
 **Date:** 2026-10-15 (Europe/Istanbul)  
 **Target Version:** 0.4.3  
-**Status:** All 12 Findings Remediated (3 High, 8 Medium, 1 Low)  
-**Reference Audit:** `.memory-bank/audits/security-reaudit-2026-10-15.md`  
+**Status:** All Findings Fully Remediated & Verified (R01–R12 / V01–V05)  
+**Reference Documents:**  
+- Initial Re-audit: `.memory-bank/audits/security-reaudit-2026-10-15.md`  
+- Independent Verification: `.memory-bank/audits/remediation-verification-2026-10-15.md`  
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive security hardening and defect remediation was executed on the GNNwatchtower codebase following the independent static security re-audit documented in `security-reaudit-2026-10-15.md`. All 12 identified vulnerabilities across backend API endpoints, database initialization, agent communication, telemetry scanners, alert notification channels, Windows/Linux secret storage, and backup systems have been systematically resolved, verified with unit tests, and validated against build pipelines.
+Following the independent security verification (`remediation-verification-2026-10-15.md`), an exhaustive hardening pass was executed across all residual and open attack vectors. Specifically, the open High-severity finding regarding unauthenticated HTTP agent update substitution (V01 / R03) and the four partial findings (V02 / R07, V03 / R02, V04 / R11, V05 / R12) have been thoroughly closed with cryptographically enforced controls, strict input boundaries, and automated filesystem migrations.
 
-No mock data or simulated placeholders were introduced, preserving the Zero Placeholder Invariant and the single-binary zero-CGO SQLite (`modernc.org/sqlite`) appliance architecture.
-
----
-
-## 2. Remediation Matrix
-
-| Finding ID | Severity | Affected Area | Core Issue | Mitigation Summary | Verification Status |
-|---|---|---|---|---|---|
-| **R01** | High | API Routes & Agent Enrollment | Enrollment key leaked via public installer scripts; unauthenticated device hijacking | Moved installer script routes behind `AuthMiddleware`. Made enrollment key validation strictly fail-closed. Enforced `X-Agent-Token` authorization for re-enrolling registered devices. | Verified via unit tests & route tests |
-| **R02** | High | DB Bootstrap / Initial Auth | Predictable initial `admin/admin` credentials enabled race takeover | Replaced static password seeding with cryptographically random 24-character password generation written to `./data/initial_admin_password.txt` with `0600` permissions (or `INITIAL_ADMIN_PASSWORD` env var). Removed upon initial password reset. | Verified via `TestMandatoryPasswordChangeFlow` |
-| **R03** | High | Agent Self-Upgrade | Upgrade allowed arbitrary HTTP URLs and lacked mandatory SHA-256 verification | Implemented strict scheme and host origin pinning matching the agent's configured server URL (`downloadURL.Scheme == serverURL.Scheme` & `downloadURL.Host == serverURL.Host`). Blocked off-domain/downgrade redirects. Enforced mandatory 64-hex SHA-256 checksum verification before applying binary. | Verified via agent compilation & test suite |
-| **R04** | Medium | API Rate Limiting | Spoofed `X-Forwarded-For` bypassed login rate limits | Configured Gin `r.SetTrustedProxies(nil)` to ignore spoofed proxy headers. Implemented dual-layer rate limiting tracking both remote IP and target username (locking out target username for 5 minutes after 5 failed attempts across all IPs). | Verified via `TestLoginRateLimiter` & `TestUsernameRateLimiting` |
-| **R05** | Medium | Password Hashing | Silently degraded to legacy SHA-256 on passwords exceeding 72 bytes | Removed silent SHA-256 fallback in `HashPassword`. Enforced hard 72-byte ceiling in both `HashPassword` and API validation (`400 Bad Request` if `len([]byte(pass)) > 72`). | Verified via `TestHashPasswordAndVerify` & API tests |
-| **R06** | Medium | Agent Enrollment IP Validation | Unvalidated enrollment IP/hostnames could inject arbitrary targets into network monitor | Validated `req.LocalIP` with `net.ParseIP`. Rejects URLs, port suffixes, path traversals, or non-IP strings with `400 Bad Request`. | Verified via route validation |
-| **R07** | Medium | Settings & Installer Generator | Injection in `agent_enrollment_key` could lead to script command injection in bash/PowerShell | Enforced strict regex validation `^[a-zA-Z0-9_\-]{16,64}$` in `UpdateSettings`. Sanitized host and key values and single-quoted all script arguments in installer generators. | Verified via API validation |
-| **R08** | Medium | Session Management | Token remained valid across password changes and logouts | Added active session revocation: changing password revokes all other active session tokens for that user. Added `POST /api/auth/logout` endpoint that invalidates the caller's session token server-side. | Verified via `TestLogoutRevocation` |
-| **R09** | Medium | Discovery Subnet Scanner | Massive CIDRs (e.g. `/8`, `/16`) could cause out-of-memory denial of service | Enforced IPv4-only checking and restricted subnet prefix length to a maximum of `/22` (1024 addresses) prior to allocating memory slices. | Verified via `TestScanSubnetBounds` |
-| **R10** | Medium | Brevo Email Notification | Unescaped telemetry and device strings in HTML email could allow HTML injection / XSS | Wrapped all dynamic variables (`company, location, alertType, devName, ip, timestamp, detail`) with `html.EscapeString` prior to HTML string template interpolation. | Verified via incident formatting tests |
-| **R11** | Medium | Windows Agent Secret Storage | Agent token and enrollment keys inherited permissive parent folder ACLs | Enforced `0600` file modes and executed Windows `icacls.exe` to strip inheritance (`/inheritance:r`) and grant full access exclusively to `SYSTEM` and `Administrators` (`/grant:r "SYSTEM:(F)" /grant:r "Administrators:(F)"`). | Verified via Windows agent compilation |
-| **R12** | Low | Backup Archives | Backup directories and archive files had permissive default permissions | Enforced POSIX `0700` directory permissions on `./backups` and `0600` file permissions on exported JSON backup archives. | Verified via backup manager code review |
+All changes strictly uphold the project's **Single-Binary Zero-CGO SQLite Invariant** and **Zero Placeholder Invariant**.
 
 ---
 
-## 3. Detailed Technical Remediation
+## 2. Comprehensive Remediation & Verification Matrix
 
-### R01 — Fleet Enrollment Key Disclosure & Rogue Hijacking Mitigation
-- **Files Modified:** `backend/internal/api/router.go`, `backend/internal/api/handlers.go`, `frontend/src/components/AgentModal.vue`
-- **Mitigation:**
-  - Moved `/agent/install/linux` and `/agent/install/windows` routes inside the authenticated `protected` route group (`protected.Use(AuthMiddleware())`).
-  - In `AgentEnroll`: The query `SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'` is now strictly fail-closed: if the key is empty, unset, or database query errors out, the request is rejected with `503 Service Unavailable`.
-  - Re-enrollment Hijacking Defense: When an enrollment request matches an existing device ID, the backend verifies if the device already has an assigned `agent_token`. If so, the caller MUST present the matching existing token either via the `X-Agent-Token` HTTP header or the `agent_token` JSON payload field. Otherwise, HTTP `409 Conflict` is returned with an explicit error message.
-  - In the frontend `AgentModal.vue`, the one-liner command generation was updated so Linux hosts download the binary directly from `/api/agent/download/linux` and pass the user's authorized enrollment key parameter, matching Windows deployment behavior without relying on public plaintext script endpoints.
-
-### R02 — Bootstrap Password Takeover Elimination
-- **Files Modified:** `backend/internal/database/db.go`, `backend/internal/api/auth.go`, `backend/internal/api/auth_test.go`
-- **Mitigation:**
-  - Removed the static default `admin/admin` database initialization seed.
-  - During `InitDB`, if the `users` table is empty:
-    1. Checks if the `INITIAL_ADMIN_PASSWORD` environment variable is defined.
-    2. If not defined, generates a cryptographically secure 24-character hexadecimal password via `crypto/rand`.
-    3. Hashes the password using bcrypt (cost 12) with `must_change_password = 1`.
-    4. Writes the generated password to `./data/initial_admin_password.txt` with restrictive `0600` POSIX permissions and outputs a secure notice to the server log.
-  - Upon successful invocation of `POST /api/auth/change-password`, `./data/initial_admin_password.txt` is automatically deleted from disk.
-
-### R03 — Agent Remote Upgrade Origin Pinning & Mandatory SHA-256 Checksums
-- **Files Modified:** `backend/cmd/agent/main.go`
-- **Mitigation:**
-  - In `performUpgrade()`, parsed both `serverURL` and `downloadURL` using Go's `net/url` package.
-  - Enforced strict origin pinning: `downloadURL.Scheme == serverURL.Scheme` and `downloadURL.Host == serverURL.Host`. If an upgrade payload attempts to fetch binaries from a different scheme (e.g. HTTPS to HTTP downgrade) or external hostname/port, the upgrade process immediately aborts with `[Upgrade] REJECTED: download URL origin does not match trusted server origin`.
-  - Configured `http.Client.CheckRedirect` to prevent open or off-origin redirect chaining.
-  - Made SHA-256 checksums strictly mandatory: if the SHA-256 checksum string is empty or not exactly 64 hexadecimal characters, the agent rejects the upgrade before attempting binary replacement.
-
-### R04 — Dual-Layer IP & Username Rate Limiting with Trusted Proxy Hardening
-- **Files Modified:** `backend/internal/api/router.go`, `backend/internal/api/auth.go`, `backend/internal/api/auth_test.go`
-- **Mitigation:**
-  - Added `_ = r.SetTrustedProxies(nil)` to Gin router configuration, ensuring `c.ClientIP()` uses the real TCP `RemoteAddr` instead of spoofable client-supplied `X-Forwarded-For` headers unless explicitly configured behind a trusted reverse proxy.
-  - Upgraded authentication rate limiting from single IP tracking to dual-layer tracking:
-    - Layer 1 (IP Rate Limiting): 5 failed attempts per IP within a 5-minute window returns `429 Too Many Requests`.
-    - Layer 2 (Username Rate Limiting): 5 failed attempts against a specific username across *any* number of distinct IPs triggers a 5-minute lockout for that username, blocking distributed credential stuffing attacks.
-
-### R05 — Bcrypt Downgrade Elimination & Boundary Validation
-- **Files Modified:** `backend/internal/database/db.go`, `backend/internal/database/db_test.go`, `backend/internal/api/auth.go`
-- **Mitigation:**
-  - Refactored `HashPassword(password string) (string, error)` signature to return an explicit error instead of falling back to legacy SHA-256.
-  - Enforced an explicit 72-byte ceiling check: passwords longer than 72 bytes return `errors.New("şifre uzunluğu en fazla 72 bayt olabilir")`.
-  - In `ChangePassword`, added pre-validation rejecting passwords exceeding 72 bytes with HTTP `400 Bad Request`.
-  - Updated unit tests in `db_test.go` ensuring that input passwords greater than 72 bytes fail cleanly with an error and never produce weak SHA-256 hashes.
-
-### R06 — Agent Enrollment IP Literal Validation & SSRF Prevention
-- **Files Modified:** `backend/internal/api/handlers.go`
-- **Mitigation:**
-  - In `AgentEnroll`, added strict IP validation on `req.LocalIP` using `net.ParseIP(targetIP)`.
-  - If `req.LocalIP` is non-empty and fails `net.ParseIP`, the endpoint immediately terminates with `400 Bad Request: "Geçersiz yerel IP adresi biçimi"`.
-  - URL prefixes, path traversals, ports, and schema injections cannot be stored in the device record or queried by the ping/HTTP telemetry monitor.
-
-### R07 — Installer Script Argument Sanitization & Injection Defense
-- **Files Modified:** `backend/internal/api/handlers.go`
-- **Mitigation:**
-  - In `UpdateSettings`, added regex validation verifying that any updated `agent_enrollment_key` matches `^[a-zA-Z0-9_\-]{16,64}$`.
-  - In `GenerateLinuxAgentScript` and `GenerateWindowsAgentScript`, stripped non-alphanumeric/non-safe characters from both host headers and enrollment keys using `strings.Map`.
-  - Single-quoted all injected shell and PowerShell arguments to prevent command substitution or shell expansion.
-
-### R08 — Server-Side Session Revocation on Password Change and Logout
-- **Files Modified:** `backend/internal/api/auth.go`, `backend/internal/api/router.go`, `backend/internal/api/auth_test.go`, `frontend/src/services/api.js`
-- **Mitigation:**
-  - In `ChangePassword`, iterated over `activeSessions` under `sessionsMu.Lock()` to delete all existing sessions belonging to the user other than the current session token.
-  - Implemented `POST /api/auth/logout` endpoint in `auth.go` and registered it in `router.go`. When invoked, it purges the caller's session token from `activeSessions`.
-  - Updated frontend `api.logout()` to call `client.post('/auth/logout')` before clearing `localStorage`.
-
-### R09 — CIDR Size & IPv4 Boundary Enforcement against OOM DoS
-- **Files Modified:** `backend/internal/discovery/scanner.go`, `backend/internal/discovery/scanner_test.go`
-- **Mitigation:**
-  - In `ScanSubnet`, added check verifying that the parsed IP is IPv4 (`ip.To4() != nil`).
-  - Calculated `hostBits = bits - ones` from `ipnet.Mask.Size()`.
-  - If `hostBits > 10` (any subnet larger than `/22`, i.e., >1024 addresses), the function immediately aborts with `fmt.Errorf("alt ağ çok geniş (2^%d host). Güvenlik ve performans nedeniyle en fazla /22 (1024 IP) taranabilir", hostBits)`.
-  - Memory slice allocations for IP lists are guarded and cannot be exhausted by unbounded CIDRs.
-
-### R10 — HTML Escaping for Brevo Email Alerts against Stored XSS / Injection
-- **Files Modified:** `backend/internal/incident/classifier.go`
-- **Mitigation:**
-  - In `SendBrevoEmail`, wrapped all dynamic input fields (`company`, `location`, `alertType`, `devName`, `ip`, `timestamp`, `detail`) with `html.EscapeString()`.
-  - Prevents HTML formatting breakage and stored markup injection when incidents are reported via Brevo email notifications.
-
-### R11 — Restrictive NTFS File ACLs on Windows Secret Files
-- **Files Modified:** `backend/cmd/agent/main.go`
-- **Mitigation:**
-  - In `saveAgentKey()` and `saveEnrollKey()`, files are written with POSIX `0600` permissions.
-  - On `runtime.GOOS == "windows"`, automatically executes:
-    `icacls.exe <filePath> /inheritance:r /grant:r "SYSTEM:(F)" /grant:r "Administrators:(F)"`
-  - Strips inherited directory permissions and restricts read/write permissions strictly to the Local System account and the local Administrators group.
-
-### R12 — Secure POSIX File Modes (0700/0600) for Backup Bundles
-- **Files Modified:** `backend/internal/backup/manager.go`
-- **Mitigation:**
-  - Changed backup directory creation permissions from `0755` to `0700` (`os.MkdirAll(backupDir, 0700)`).
-  - Changed exported JSON backup file permissions from `0644` to `0600` (`os.WriteFile(path, data, 0600)`).
-  - Ensures backup archives containing system secrets cannot be read by unprivileged local OS users.
+| ID | Verification Status | Mitigation & Cryptographic Architecture | Test & Evidence |
+|---|---|---|---|
+| **R01** | **Closed** | Installer routes behind `AuthMiddleware`; fail-closed key check; mandatory `X-Agent-Token` authorization for re-enrolling registered devices. | Route tests pass; unauthorized queries receive `401`/`503`. |
+| **R02 / V03** | **Closed** | Removed plaintext password logging (only credential file path is logged). In addition, any existing database with legacy default password `'admin'` is automatically rotated to a fresh random password on startup, written to `./data/initial_admin_password.txt` (mode 0600), and enforced with `must_change_password=1`. | `TestLegacyAdminPasswordRotation` & `TestMandatoryPasswordChangeFlow` pass. |
+| **R03 / V01** | **Closed** | Implemented **Ed25519 Asymmetric Digital Signature Verification**. Server signs `(targetVersion + ":" + sha256)` with a protected Ed25519 private key (`0600` on server). Agents pin the public key upon authorized enrollment or via `-signer-key`. If transport is plain HTTP or altered on-path, forged updates are mathematically rejected. Optional `-require-https` flag added to agent. | `TestEd25519UpdateSigningAndVerification` passes; tampered digests and forged keys fail immediately. |
+| **R04** | **Closed** | Configured `r.SetTrustedProxies(nil)` on Gin router. Dual-layer rate limiter protects both peer IPs and usernames (locking out target username for 5 minutes after 5 failures). | `TestLoginRateLimiter` & `TestUsernameRateLimiting` pass. |
+| **R05** | **Closed** | Eliminated weak SHA-256 fallback in `HashPassword`. Enforced explicit 72-byte ceiling in both database and API validation layers. | `TestHashPasswordAndVerify` passes. |
+| **R06** | **Closed** | Strict `net.ParseIP` literal validation on `req.LocalIP` during agent enrollment; non-IP inputs rejected with `400 Bad Request`. | Probe verified; URL format rejected. |
+| **R07 / V02** | **Closed** | Enforced regex validation `^[a-zA-Z0-9_\-]{16,64}$` in `backup.ImportAll` to prevent restored malicious keys. Frontend `AgentModal.vue` regex-validates `safeEnrollKey`, sanitizes origin hostnames, and wraps all shell and PowerShell arguments in strict single quotes (`'...'`), preventing command expansion. | `TestImportAllRejectsUnsafeEnrollmentKey` passes; malicious keys in backups are rejected. |
+| **R08** | **Closed** | Password change purges all other active sessions from server memory. Added server-side `POST /api/auth/logout` endpoint, and updated frontend `api.logout()` to invalidate session server-side before clearing client storage. | `TestLogoutRevocation` passes. |
+| **R09** | **Closed** | Enforced IPv4 validation and hard `/22` (1024 hosts) subnet size ceiling before memory allocation in `ScanSubnet`. | `TestScanSubnetBounds` passes. |
+| **R10** | **Closed** | Wrapped all 7 dynamic incident variables (`company, location, alertType, devName, ip, timestamp, detail`) with `html.EscapeString` in Brevo email template generation. | Verified by code inspection. |
+| **R11 / V04** | **Closed** | Windows ACL hardening uses locale-independent well-known SIDs: `*S-1-5-18` (Local SYSTEM) and `*S-1-5-32-544` (Builtin Administrators). `icacls` errors are checked and returned. Existing key files are automatically migrated to strict permissions on load. | Agent cross-compiles cleanly; verified via code inspection. |
+| **R12 / V05** | **Closed** | Implemented `EnsureBackupPermissions` which actively migrates existing backup directories to `0700` and all existing archive files to `0600`. Invoked automatically on startup and backup creation. | `TestEnsureBackupPermissions` passes. |
 
 ---
 
-## 4. Verification & Test Evidence
+## 3. Deep-Dive on Second-Pass Mitigations
 
-### 4.1 Go Test Suite
+### 3.1 R03 / V01 — Ed25519 Digital Signatures for Update Authenticity
+- **Root Problem:** On plain HTTP networks, an on-path attacker (MITM) could intercept heartbeat responses and download requests, altering both the binary and the expected SHA-256 digest to match, bypassing same-origin checks.
+- **Cryptographic Solution:**
+  1. **Key Generation (`backend/internal/api/signer.go`):** The server maintains an Ed25519 signing key pair stored in `./data/agent_signer.key` (mode `0600`).
+  2. **Signature Creation:** For every upgrade instruction, the server computes:
+     `msg := []byte(fmt.Sprintf("GNNWATCHTOWER_UPDATE:v%s:%s", targetVer, sha256Hex))`
+     `sig := ed25519.Sign(privKey, msg)`
+     The 64-byte signature is transmitted in `AgentUpgradeInstruction.Signature`.
+  3. **Key Pinning on Agent:** The agent receives and pins the Ed25519 public key during enrollment (`saveSignerKey`) or via the `-signer-key` installation parameter.
+  4. **Verification in `performUpgrade`:** The agent parses the signature and verifies `ed25519.Verify(pinnedPubKey, expectedMsg, sigBytes)`. If the signature is missing, invalid, or forged, the upgrade is immediately aborted. An attacker lacking the server's private key cannot forge valid update instructions over HTTP.
+  5. **HTTPS Enforcement Option:** Added `-require-https` flag and `REQUIRE_HTTPS` environment variable to enforce end-to-end transport encryption where desired.
+
+### 3.2 R07 / V02 — Backup Restore Validation & Command Escaping
+- **Root Problem:** While `UpdateSettings` had regex checks, `backup.ImportAll` restored settings directly without validation. An operator restoring a malicious backup could cause the frontend to interpolate arbitrary shell commands.
+- **Solution:**
+  1. In `backend/internal/backup/manager.go`, `ImportAll` validates `agent_enrollment_key` against `^[a-zA-Z0-9_\-]{16,64}$`. If malformed, the restore aborts with a security error.
+  2. In `frontend/src/components/AgentModal.vue`, `safeEnrollKey` strictly validates the key via regex before command interpolation.
+  3. All PowerShell and Linux commands generated in `AgentModal.vue` use strict single-quoted literals (`'...'`), preventing subexpression expansion (`$()`) or variable substitution.
+
+### 3.3 R02 / V03 — Log Disclosure & Legacy Default Rotation
+- **Root Problem:** Bootstrap passwords were logged in plaintext in `log.Printf`. Installations with untouched `admin/admin` credentials remained vulnerable to race-to-claim.
+- **Solution:**
+  1. In `backend/internal/database/db.go`, plaintext passwords are never emitted to logs. Logs only reference the protected file location (`./data/initial_admin_password.txt`, mode `0600`).
+  2. If an existing database has an `admin` user with the legacy password `"admin"`, `migrateSchema` detects this on startup and immediately rotates it to a fresh cryptographically random 24-character password, saves it to `./data/initial_admin_password.txt` (0600), sets `must_change_password=1`, and updates the hash.
+
+### 3.4 R11 / V04 — Locale-Independent Windows SIDs & ACL Error Handling
+- **Root Problem:** `icacls` was called with English names ("SYSTEM", "Administrators") which fail on non-English Windows editions. Errors were ignored, and existing keys were not hardened on read.
+- **Solution:**
+  1. Updated `secureFilePermissions` to use universal SIDs: `*S-1-5-18:(F)` (Local SYSTEM) and `*S-1-5-32-544:(F)` (Builtin Administrators).
+  2. Checked and returned command errors.
+  3. Added calls to `secureFilePermissions` during `loadAgentKey`, `loadEnrollKey`, and `loadSignerKey` to ensure existing legacy files are automatically migrated upon reading.
+
+### 3.5 R12 / V05 — Automatic Backup Permissions Migration
+- **Root Problem:** `os.MkdirAll` did not tighten permissions on pre-existing directories, and existing archive files remained mode `0644`.
+- **Solution:**
+  1. Created `EnsureBackupPermissions` in `backend/internal/backup/manager.go`.
+  2. Explicitly executes `os.Chmod(backupDir, 0700)` and iterates over all existing files in `backupDir` applying `os.Chmod(filePath, 0600)`.
+  3. Invoked on backup scheduler initialization and during automated exports.
+
+---
+
+## 4. Verification Test Evidence
+
 All backend packages were executed and passed cleanly:
 ```
 === RUN   TestLoginRateLimiter
---- PASS: TestLoginRateLimiter (0.54s)
+--- PASS: TestLoginRateLimiter (0.58s)
 === RUN   TestMandatoryPasswordChangeFlow
---- PASS: TestMandatoryPasswordChangeFlow (1.31s)
+--- PASS: TestMandatoryPasswordChangeFlow (1.40s)
 === RUN   TestUsernameRateLimiting
 --- PASS: TestUsernameRateLimiting (0.00s)
 === RUN   TestLogoutRevocation
 --- PASS: TestLogoutRevocation (0.00s)
+=== RUN   TestEd25519UpdateSigningAndVerification
+--- PASS: TestEd25519UpdateSigningAndVerification (0.00s)
 PASS
-ok  	gnnwatchtower/internal/api	1.885s
+ok  	gnnwatchtower/internal/api	2.027s
+=== RUN   TestEnsureBackupPermissions
+--- PASS: TestEnsureBackupPermissions (0.00s)
+=== RUN   TestImportAllRejectsUnsafeEnrollmentKey
+--- PASS: TestImportAllRejectsUnsafeEnrollmentKey (0.58s)
+PASS
+ok  	gnnwatchtower/internal/backup	0.618s
 === RUN   TestHashPasswordAndVerify
---- PASS: TestHashPasswordAndVerify (0.78s)
+--- PASS: TestHashPasswordAndVerify (0.85s)
 === RUN   TestLegacySHA256BackwardCompatibility
 --- PASS: TestLegacySHA256BackwardCompatibility (0.00s)
+=== RUN   TestLegacyAdminPasswordRotation
+--- PASS: TestLegacyAdminPasswordRotation (1.70s)
 PASS
-ok  	gnnwatchtower/internal/database	(cached)
+ok  	gnnwatchtower/internal/database	2.583s
 === RUN   TestScanSubnetBounds
 --- PASS: TestScanSubnetBounds (0.00s)
 PASS
@@ -176,26 +133,14 @@ PASS
 ok  	gnnwatchtower/internal/version	(cached)
 ```
 
-### 4.2 Frontend Production Build
-The Vue 3 frontend bundle was built cleanly using Vite:
-```
-vite v5.4.21 building for production...
-✓ 79 modules transformed.
-../backend/cmd/server/dist/index.html                   1.21 kB │ gzip:  0.67 kB
-../backend/cmd/server/dist/assets/index-8QWwWlQt.css   27.86 kB │ gzip:  5.70 kB
-../backend/cmd/server/dist/assets/index-0rWtvK4S.js   244.64 kB │ gzip: 75.19 kB
-✓ built in 2.98s
-```
-
-### 4.3 Zero-CGO Binary Compilation
-Both the backend server (with embedded production frontend assets) and agent binaries compiled with zero CGO dependencies:
-```
-CGO_ENABLED=0 go build -buildvcs=false ./cmd/server -> SUCCESS (18MB single binary)
-CGO_ENABLED=0 go build -buildvcs=false ./cmd/agent  -> SUCCESS
-```
+### Build & Zero-CGO Validation
+- **Frontend:** Built via Vite production pipeline into `backend/cmd/server/dist/`.
+- **Server:** `CGO_ENABLED=0 go build -buildvcs=false ./cmd/server` -> 18MB standalone binary.
+- **Linux Agent:** `CGO_ENABLED=0 go build -buildvcs=false ./cmd/agent` -> standalone binary.
+- **Windows Agent:** `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false ./cmd/agent` -> `gnnwatchtower-agent.exe`.
 
 ---
 
 ## 5. Conclusion
 
-All 12 findings (R01 through R12) from `security-reaudit-2026-10-15.md` have been fully mitigated. The system maintains high architectural integrity, zero third-party cloud service dependencies, strict fail-closed security postures, and comprehensive regression test coverage.
+With the integration of Ed25519 cryptographic signatures, strict backup restore validation, plaintext log suppression, legacy credential rotation, locale-independent Windows SIDs, and active backup permission migrations, all 12 findings and their associated verification probes are definitively closed.

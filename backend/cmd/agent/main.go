@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +31,7 @@ type ServerHeartbeatResponse struct {
 	TargetVersion string `json:"target_version,omitempty"`
 	DownloadURL   string `json:"download_url,omitempty"`
 	SHA256        string `json:"sha256,omitempty"`
+	Signature     string `json:"signature,omitempty"`
 }
 
 type AgentReportPayload struct {
@@ -121,20 +123,71 @@ func loadAgentKey() string {
 	if err == nil {
 		k := strings.TrimSpace(string(data))
 		if len(k) >= 16 {
+			// Migrate legacy permissions
+			_ = secureFilePermissions(keyPath)
 			return k
 		}
 	}
 	return ""
 }
 
-func secureFilePermissions(path string) {
+func secureFilePermissions(path string) error {
 	if runtime.GOOS == "windows" {
-		// Fix R11: Strip inherited ACLs and grant Full Control only to SYSTEM and Administrators
-		cmd := exec.Command("icacls.exe", path, "/inheritance:r", "/grant:r", "SYSTEM:(F)", "/grant:r", "Administrators:(F)")
-		_ = cmd.Run()
-	} else {
-		_ = os.Chmod(path, 0600)
+		// Fix R11: Use locale-independent well-known SIDs:
+		// *S-1-5-18 = Local SYSTEM
+		// *S-1-5-32-544 = Builtin Administrators
+		// /inheritance:r removes inherited ACEs
+		// /grant:r replaces existing grants for these principals
+		cmd := exec.Command("icacls.exe", path, "/inheritance:r", "/grant:r", "*S-1-5-18:(F)", "/grant:r", "*S-1-5-32-544:(F)")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("[GNNwatchtower Agent] Windows ACL ayarlama hatasi (%s): %v | %s", path, err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("icacls error: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		return nil
 	}
+	return os.Chmod(path, 0600)
+}
+
+func getSignerKeyPath() string {
+	dir := os.Getenv("ProgramFiles")
+	if dir != "" && runtime.GOOS == "windows" {
+		return fmt.Sprintf("%s\\GNNwatchtower-Agent\\signer.pub", dir)
+	}
+	return "/opt/gnnwatchtower-agent/signer.pub"
+}
+
+func loadSignerKey() ed25519.PublicKey {
+	keyPath := getSignerKeyPath()
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil
+	}
+	hexStr := strings.TrimSpace(string(data))
+	keyBytes, err := hex.DecodeString(hexStr)
+	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
+		return nil
+	}
+	_ = secureFilePermissions(keyPath)
+	return ed25519.PublicKey(keyBytes)
+}
+
+func saveSignerKey(pubKeyHex string) error {
+	k := strings.TrimSpace(pubKeyHex)
+	if k == "" {
+		return nil
+	}
+	keyPath := getSignerKeyPath()
+	dir := os.Getenv("ProgramFiles")
+	if dir != "" && runtime.GOOS == "windows" {
+		_ = os.MkdirAll(fmt.Sprintf("%s\\GNNwatchtower-Agent", dir), 0700)
+	} else if runtime.GOOS == "linux" {
+		_ = os.MkdirAll("/opt/gnnwatchtower-agent", 0700)
+	}
+	if err := os.WriteFile(keyPath, []byte(k), 0600); err != nil {
+		return err
+	}
+	return secureFilePermissions(keyPath)
 }
 
 func saveAgentKey(token string) error {
@@ -145,11 +198,10 @@ func saveAgentKey(token string) error {
 	} else if runtime.GOOS == "linux" {
 		_ = os.MkdirAll("/opt/gnnwatchtower-agent", 0700)
 	}
-	err := os.WriteFile(keyPath, []byte(token), 0600)
-	if err == nil {
-		secureFilePermissions(keyPath)
+	if err := os.WriteFile(keyPath, []byte(token), 0600); err != nil {
+		return err
 	}
-	return err
+	return secureFilePermissions(keyPath)
 }
 
 func loadEnrollKey() string {
@@ -158,6 +210,7 @@ func loadEnrollKey() string {
 	if err == nil {
 		k := strings.TrimSpace(string(data))
 		if len(k) >= 8 {
+			_ = secureFilePermissions(keyPath)
 			return k
 		}
 	}
@@ -176,11 +229,10 @@ func saveEnrollKey(key string) error {
 	} else if runtime.GOOS == "linux" {
 		_ = os.MkdirAll("/opt/gnnwatchtower-agent", 0700)
 	}
-	err := os.WriteFile(keyPath, []byte(k), 0600)
-	if err == nil {
-		secureFilePermissions(keyPath)
+	if err := os.WriteFile(keyPath, []byte(k), 0600); err != nil {
+		return err
 	}
-	return err
+	return secureFilePermissions(keyPath)
 }
 
 func autoEnroll(serverURL, enrollKey string) (string, error) {
@@ -230,8 +282,9 @@ func autoEnroll(serverURL, enrollKey string) (string, error) {
 	}
 
 	var enrollResp struct {
-		Status string `json:"status"`
-		Token  string `json:"token"`
+		Status          string `json:"status"`
+		Token           string `json:"token"`
+		UpdatePublicKey string `json:"update_public_key"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&enrollResp); err != nil {
 		return "", fmt.Errorf("kayit cevabi cozumlenemedi: %w", err)
@@ -239,6 +292,14 @@ func autoEnroll(serverURL, enrollKey string) (string, error) {
 
 	if enrollResp.Token == "" {
 		return "", fmt.Errorf("sunucu bos token dondurdu")
+	}
+
+	if enrollResp.UpdatePublicKey != "" {
+		if err := saveSignerKey(enrollResp.UpdatePublicKey); err != nil {
+			log.Printf("[UYARI] Ajan dogrulama acik anahtari (Signer Key) kaydedilemedi: %v", err)
+		} else {
+			log.Printf("[OK] Ajan guncelleme dogrulama acik anahtari (Ed25519) guvenle tescil edildi.")
+		}
 	}
 
 	if err := saveAgentKey(enrollResp.Token); err != nil {
@@ -254,6 +315,8 @@ func main() {
 	serverURL := flag.String("server", "", "GNNwatchtower Appliance URL (Orn: http://10.38.1.13:3800)")
 	token := flag.String("token", "", "GNNwatchtower Agent Token (Opsiyonel, bos ise otomatik kayit yapilir)")
 	enrollKeyFlag := flag.String("enroll-key", "", "GNNwatchtower Ajan Kayıt Anahtarı (Agent Enrollment Key)")
+	signerKeyFlag := flag.String("signer-key", "", "GNNwatchtower Ajan Güncelleme Doğrulama Açık Anahtarı (Ed25519 Public Key)")
+	requireHTTPSFlag := flag.Bool("require-https", false, "Yalnızca şifrelenmiş HTTPS bağlantılarına izin verir")
 	serviceCmd := flag.String("service", "", "Servis islemleri: install, uninstall, start, stop, restart, status, diag")
 	intervalSec := flag.Int("interval", 15, "Periyodik heartbeat araligi (saniye)")
 	showVersion := flag.Bool("version", false, "Ajan surum numarasini gosterir")
@@ -264,6 +327,10 @@ func main() {
 	if *showVersion {
 		fmt.Printf("GNNwatchtower Enterprise Telemetry Agent v%s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
 		os.Exit(0)
+	}
+
+	if *signerKeyFlag != "" {
+		_ = saveSignerKey(*signerKeyFlag)
 	}
 
 	if *enrollKeyFlag != "" {
@@ -282,6 +349,10 @@ func main() {
 	}
 	if resolvedServerURL == "" {
 		resolvedServerURL = "http://127.0.0.1:3800"
+	}
+
+	if (*requireHTTPSFlag || os.Getenv("REQUIRE_HTTPS") == "true" || os.Getenv("REQUIRE_HTTPS") == "1") && strings.HasPrefix(strings.ToLower(resolvedServerURL), "http://") {
+		log.Fatalf("[FATAL] Guvenlik ilkesi ihlali: -require-https aktif ancak sunucu adresi sifrelenmemis HTTP (%s) olarak belirtildi!", resolvedServerURL)
 	}
 
 	// 2. Check if invoked as service management command
@@ -512,11 +583,11 @@ func handleServerInstruction(serverURL, token string, resp *ServerHeartbeatRespo
 		isUpgrading = true
 		upgradeMu.Unlock()
 
-		go performUpgrade(serverURL, token, resp.TargetVersion, resp.DownloadURL, resp.SHA256)
+		go performUpgrade(serverURL, token, resp.TargetVersion, resp.DownloadURL, resp.SHA256, resp.Signature)
 	}
 }
 
-func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 string) {
+func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256, signatureHex string) {
 	log.Printf("[GNNwatchtower Agent] Uzaktan guncelleme talimati alindi! Hedef Surum: v%s", targetVer)
 	logToFile(fmt.Sprintf("[BILGI] Uzaktan guncelleme talimati alindi -> Hedef: v%s", targetVer))
 
@@ -573,6 +644,35 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
+
+	// Fix R03: Enforce mandatory Ed25519 digital signature verification!
+	// This proves authenticity independently of the transport channel, completely defeating HTTP MITM substitution!
+	signerPubKey := loadSignerKey()
+	if signerPubKey == nil {
+		setUpgradeState("failed", "Guvenlik: Ajan guncelleme dogrulama anahtari (Signer Key) bulunamadi")
+		logToFile("[HATA] Guvenlik ihlali: Dogrulama anahtari (Signer Key) yuklenemedi, guncelleme durduruldu")
+		_, _ = sendHeartbeat(serverURL, token, hostname)
+		return
+	}
+
+	cleanSig := strings.TrimSpace(signatureHex)
+	sigBytes, sErr := hex.DecodeString(cleanSig)
+	if sErr != nil || len(sigBytes) != ed25519.SignatureSize {
+		setUpgradeState("failed", "Guvenlik ihlali: Guncelleme paketi gecersiz veya eksik Ed25519 imzasi iceriyor")
+		logToFile(fmt.Sprintf("[HATA] Guvenlik: Ed25519 imza uzunlugu veya formati hatali (len=%d)", len(sigBytes)))
+		_, _ = sendHeartbeat(serverURL, token, hostname)
+		return
+	}
+
+	expectedMsg := []byte(fmt.Sprintf("GNNWATCHTOWER_UPDATE:v%s:%s", strings.TrimSpace(targetVer), cleanExpectedSHA))
+	if !ed25519.Verify(signerPubKey, expectedMsg, sigBytes) {
+		setUpgradeState("failed", "Guvenlik ihlali: Guncelleme paketi dijital imza dogrulamasini gecemedi (SAHTE VEYA DEGISTIRILMIS PAKET)!")
+		logToFile(fmt.Sprintf("[HATA] Guvenlik ihlali: Ed25519 imza gecersiz! Hedef: v%s, SHA: %s", targetVer, cleanExpectedSHA))
+		_, _ = sendHeartbeat(serverURL, token, hostname)
+		log.Printf("[HATA] Guncelleme paketi dijital imza dogrulamasini GECEMEDI! Ag uzerinde paket degistirilmis olabilir.")
+		return
+	}
+	log.Printf("[GNNwatchtower Agent] Ed25519 dijital imza dogrulandi (Authenticity Verified).")
 
 	tmpFile := exePath + ".update"
 	_ = os.Remove(tmpFile)

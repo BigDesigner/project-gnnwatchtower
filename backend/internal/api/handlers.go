@@ -1014,6 +1014,7 @@ func AgentEnroll(c *gin.Context) {
 		DeviceID:             devID,
 		CheckIntervalSeconds: 15,
 		ServerVersion:        version.Get(),
+		UpdatePublicKey:      GetUpdatePublicKeyHex(),
 	})
 }
 
@@ -1140,6 +1141,7 @@ func AgentHeartbeat(c *gin.Context) {
 		}
 
 		checksum := getBinaryChecksum(platform)
+		sig, _ := SignAgentUpdate(targetVer, checksum)
 
 		c.JSON(http.StatusOK, models.AgentUpgradeInstruction{
 			Status:        "ok",
@@ -1147,6 +1149,7 @@ func AgentHeartbeat(c *gin.Context) {
 			TargetVersion: targetVer,
 			DownloadURL:   fmt.Sprintf("/api/agent/download/%s", platform),
 			SHA256:        checksum,
+			Signature:     sig,
 		})
 		return
 	}
@@ -1240,13 +1243,18 @@ func GetAgentVersions(c *gin.Context) {
 
 	winHash := getBinaryChecksum("windows")
 	linuxHash := getBinaryChecksum("linux")
+	winSig, _ := SignAgentUpdate(latestVersion, winHash)
+	linuxSig, _ := SignAgentUpdate(latestVersion, linuxHash)
 
 	c.JSON(http.StatusOK, gin.H{
-		"latest_version":   latestVersion,
-		"sha256_windows":   winHash,
-		"sha256_linux":     linuxHash,
-		"download_windows": "/api/agent/download/windows",
-		"download_linux":   "/api/agent/download/linux",
+		"latest_version":    latestVersion,
+		"sha256_windows":    winHash,
+		"sha256_linux":      linuxHash,
+		"signature_windows": winSig,
+		"signature_linux":   linuxSig,
+		"update_public_key": GetUpdatePublicKeyHex(),
+		"download_windows":  "/api/agent/download/windows",
+		"download_linux":    "/api/agent/download/linux",
 	})
 }
 

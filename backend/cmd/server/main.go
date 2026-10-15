@@ -134,7 +134,12 @@ func main() {
 	}
 	defer db.Close()
 
-	// 3. Start Polling Engine (Goroutine worker pool)
+	// 3. Initialize Ed25519 Update Signer
+	if err := api.InitUpdateSigner("./data"); err != nil {
+		log.Printf("[WARN] Failed initializing update signer: %v", err)
+	}
+
+	// 4. Start Polling Engine (Goroutine worker pool)
 	poller := monitor.StartPoller(15 * time.Second)
 	defer poller.Stop()
 	log.Println("[GNNwatchtower Core] Polling Engine started (15s baseline interval)")
