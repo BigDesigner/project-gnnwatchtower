@@ -57,6 +57,7 @@
             <th class="py-2.5 px-3 w-10">
               <input type="checkbox" class="rounded border-[#232936] bg-[#141820] text-emerald-600 focus:ring-0">
             </th>
+            <th class="py-2.5 px-3 w-12 font-mono text-center">ID</th>
             <th class="py-2.5 px-3">Web Sitesi / Başlık</th>
             <th class="py-2.5 px-3">Hedef URL</th>
             <th class="py-2.5 px-3 text-center">HTTP Durumu & Protokol</th>
@@ -72,6 +73,7 @@
             <th class="py-2.5 px-3 w-10">
               <input type="checkbox" class="rounded border-[#232936] bg-[#141820] text-blue-600 focus:ring-0">
             </th>
+            <th class="py-2.5 px-3 w-12 font-mono text-center">ID</th>
             <th class="py-2.5 px-3">Cihaz / Servis</th>
             <th class="py-2.5 px-3">Tür</th>
             <th class="py-2.5 px-3">IP Adresi</th>
@@ -98,6 +100,9 @@
               >
                 <td class="py-3 px-3" @click.stop>
                   <input type="checkbox" class="rounded border-[#232936] bg-[#141820] text-emerald-600 focus:ring-0">
+                </td>
+                <td class="py-3 px-3 font-mono text-txt-muted text-[11px] text-center">
+                  #{{ device.id }}
                 </td>
 
                 <!-- Website Title & Role -->
@@ -217,6 +222,9 @@
               >
                 <td class="py-3 px-3" @click.stop>
                   <input type="checkbox" class="rounded border-[#232936] bg-[#141820] text-blue-600 focus:ring-0">
+                </td>
+                <td class="py-3 px-3 font-mono text-txt-muted text-[11px] text-center">
+                  #{{ device.id }}
                 </td>
 
                 <!-- Name & Agent Indicator -->

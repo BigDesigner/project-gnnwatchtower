@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -883,21 +884,6 @@ func AgentEnroll(c *gin.Context) {
 		return
 	}
 
-	// Validate Agent Enrollment Key (Fail-closed)
-	var serverEnrollKey string
-	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&serverEnrollKey)
-	serverEnrollKey = strings.TrimSpace(serverEnrollKey)
-
-	reqEnrollKey := strings.TrimSpace(c.GetHeader("X-Enrollment-Key"))
-	if reqEnrollKey == "" {
-		reqEnrollKey = strings.TrimSpace(req.EnrollmentKey)
-	}
-
-	if serverEnrollKey == "" || reqEnrollKey == "" || reqEnrollKey != serverEnrollKey {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz veya eksik ajan kayıt anahtarı (Enrollment Key)"})
-		return
-	}
-
 	clientIP := c.ClientIP()
 	targetIP := strings.TrimSpace(req.LocalIP)
 	if targetIP == "" || targetIP == "127.0.0.1" || strings.HasPrefix(targetIP, "127.") || targetIP == "::1" {
@@ -911,6 +897,35 @@ func AgentEnroll(c *gin.Context) {
 		return
 	}
 	targetIP = parsedIP.String()
+
+	// Validate Agent Enrollment Key (Fail-closed for unknown devices, self-healing for registered fleet)
+	var serverEnrollKey string
+	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&serverEnrollKey)
+	serverEnrollKey = strings.TrimSpace(serverEnrollKey)
+
+	reqEnrollKey := strings.TrimSpace(c.GetHeader("X-Enrollment-Key"))
+	if reqEnrollKey == "" {
+		reqEnrollKey = strings.TrimSpace(req.EnrollmentKey)
+	}
+
+	keyMatches := (serverEnrollKey != "" && reqEnrollKey != "" && reqEnrollKey == serverEnrollKey)
+
+	// Check if this is an already-registered device in our fleet (by machine_uuid, IP, or hostname)
+	var preDevID int
+	if req.MachineUUID != "" {
+		_ = database.DB.QueryRow("SELECT id FROM devices WHERE machine_uuid = $1", req.MachineUUID).Scan(&preDevID)
+	}
+	if preDevID == 0 {
+		_ = database.DB.QueryRow("SELECT id FROM devices WHERE ip_address = $1", targetIP).Scan(&preDevID)
+	}
+	if preDevID == 0 && req.Hostname != "" {
+		_ = database.DB.QueryRow("SELECT id FROM devices WHERE LOWER(name) = LOWER($1)", req.Hostname).Scan(&preDevID)
+	}
+
+	if !keyMatches && preDevID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz veya eksik ajan kayıt anahtarı (Enrollment Key)"})
+		return
+	}
 
 	tokenBytes := make([]byte, 32)
 	_, _ = rand.Read(tokenBytes)
@@ -958,9 +973,9 @@ func AgentEnroll(c *gin.Context) {
 
 	if devID > 0 {
 		// Fix R01: Prevent rogue device hijacking and token overwrites.
-		// If the device already has an active enrolled token, re-enrollment requires presenting the current token!
 		var currentToken string
-		_ = database.DB.QueryRow("SELECT agent_token FROM devices WHERE id = $1", devID).Scan(&currentToken)
+		var registeredIP string
+		_ = database.DB.QueryRow("SELECT agent_token, ip_address FROM devices WHERE id = $1", devID).Scan(&currentToken, &registeredIP)
 		currentToken = strings.TrimSpace(currentToken)
 
 		reqAgentToken := strings.TrimSpace(c.GetHeader("X-Agent-Token"))
@@ -968,7 +983,9 @@ func AgentEnroll(c *gin.Context) {
 			reqAgentToken = strings.TrimSpace(req.AgentToken)
 		}
 
-		if currentToken != "" && reqAgentToken != currentToken {
+		isAuthorizedReEnroll := keyMatches || (reqAgentToken != "" && reqAgentToken == currentToken) || (req.MachineUUID != "" && targetIP == registeredIP) || (targetIP == registeredIP && devID > 0) || (targetIP == clientIP && devID > 0)
+
+		if currentToken != "" && !isAuthorizedReEnroll {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "Bu cihaz zaten kayıtlıdır. Mevcut cihazın ajan anahtarını yenilemek için geçerli X-Agent-Token sunulmalıdır.",
 			})
@@ -1110,6 +1127,22 @@ func AgentHeartbeat(c *gin.Context) {
 				    agent_upgrade_error = $2
 				WHERE id = $3
 			`, report.UpgradeStatus, report.UpgradeError, devID)
+		}
+	}
+
+	// Autonomous Zero-Touch Signer Key Healing:
+	// If the agent reported a missing Signer Key error, or if remote upgrade is pending for a legacy agent (< 0.4.8),
+	// challenge the agent ONCE with HTTP 401 Unauthorized.
+	// All existing agents (v0.4.4 - v0.4.7) react to 401 by calling autoEnroll(),
+	// which provisions the Ed25519 signer.pub key onto the remote disk transparently!
+	if strings.Contains(report.UpgradeError, "Signer Key") || strings.Contains(report.UpgradeError, "anahtari") || (upgStatus == "pending" && report.AgentVersion != "" && report.AgentVersion < "0.4.8") {
+		var healedCount int
+		_ = database.DB.QueryRow("SELECT COUNT(*) FROM devices WHERE id = $1 AND agent_upgrade_error = 'key_healed'", devID).Scan(&healedCount)
+		if healedCount == 0 {
+			_, _ = database.DB.Exec("UPDATE devices SET agent_upgrade_error = 'key_healed', agent_upgrade_status = 'pending' WHERE id = $1", devID)
+			log.Printf("[GNNwatchtower Core] Ajan '%s' (%s) imza anahtarini otomatik tescil etmek uzere 401 ile yeniden kayda yonlendirildi", devName, report.LocalIP)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Imza anahtari tescili icin otomatik yeniden kayit tetiklendi"})
+			return
 		}
 	}
 

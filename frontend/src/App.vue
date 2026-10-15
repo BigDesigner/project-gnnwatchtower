@@ -309,7 +309,7 @@
                   <thead class="text-txt-muted text-[10px] uppercase font-mono border-b border-[#232936]">
                     <tr>
                       <th class="py-2 px-3">Olay #</th>
-                      <th class="py-2 px-3">Cihaz ID</th>
+                      <th class="py-2 px-3">Cihaz</th>
                       <th class="py-2 px-3">Başlangıç</th>
                       <th class="py-2 px-3">Kök Neden Hipotezi</th>
                       <th class="py-2 px-3">Durum</th>
@@ -318,7 +318,12 @@
                   <tbody class="divide-y divide-[#1e2533]">
                     <tr v-for="inc in incidents.slice(0, 5)" :key="inc.id" class="hover:bg-[#181e28]">
                       <td class="py-2.5 px-3 font-mono">#{{ inc.id }}</td>
-                      <td class="py-2.5 px-3 font-mono text-txt-primary">Cihaz #{{ inc.device_id }}</td>
+                      <td class="py-2.5 px-3 font-mono">
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-blue-400 font-medium">{{ getDeviceName(inc.device_id) }}</span>
+                          <span class="text-txt-muted text-[10px]">#{{ inc.device_id }}</span>
+                        </div>
+                      </td>
                       <td class="py-2.5 px-3 font-mono text-txt-secondary">{{ formatDateTime(inc.started_at) }}</td>
                       <td class="py-2.5 px-3 text-txt-primary">{{ inc.auto_detection_hypothesis || formatCause(inc.classified_cause) }}</td>
                       <td class="py-2.5 px-3">
@@ -561,7 +566,7 @@
                 <thead class="bg-[#0c0e12] text-txt-muted text-[10px] uppercase font-mono">
                   <tr>
                     <th class="p-3">Olay #</th>
-                    <th class="p-3">Cihaz ID</th>
+                    <th class="p-3">Cihaz</th>
                     <th class="p-3">Başlangıç</th>
                     <th class="p-3">Bitiş / Çözüm</th>
                     <th class="p-3">Süre (Dk)</th>
@@ -574,7 +579,15 @@
                   <template v-if="incidents.length > 0">
                     <tr v-for="inc in incidents" :key="inc.id" class="hover:bg-[#181e28]">
                       <td class="p-3 font-mono">#{{ inc.id }}</td>
-                      <td class="p-3 font-mono text-txt-primary">Cihaz #{{ inc.device_id }}</td>
+                      <td class="p-3 font-mono">
+                        <div class="flex flex-col">
+                          <div class="flex items-center gap-1.5">
+                            <span class="text-blue-400 font-medium">{{ getDeviceName(inc.device_id) }}</span>
+                            <span class="text-txt-muted text-[10px]">#{{ inc.device_id }}</span>
+                          </div>
+                          <span v-if="getDeviceIp(inc.device_id)" class="text-[10px] text-txt-muted">{{ getDeviceIp(inc.device_id) }}</span>
+                        </div>
+                      </td>
                       <td class="p-3 font-mono text-txt-secondary">{{ formatDateTime(inc.started_at) }}</td>
                       <td class="p-3 font-mono text-txt-secondary">{{ inc.resolved_at ? formatDateTime(inc.resolved_at) : 'Devam Ediyor' }}</td>
                       <td class="p-3 font-mono">{{ inc.duration_seconds ? Math.round(inc.duration_seconds / 60) : '—' }}</td>
@@ -723,6 +736,16 @@ const stats = ref({})
 const gateway = ref({ ip: '192.168.1.1', status: 'offline', latency_ms: 0 })
 const devices = ref([])
 const incidents = ref([])
+
+const getDeviceName = (deviceId) => {
+  const d = devices.value.find(item => item.id === deviceId)
+  return d ? d.name : `Cihaz #${deviceId}`
+}
+
+const getDeviceIp = (deviceId) => {
+  const d = devices.value.find(item => item.id === deviceId)
+  return d ? d.ip_address : ''
+}
 const selectedDevice = ref(null)
 const selectedMetrics = ref([])
 const searchQuery = ref('')
