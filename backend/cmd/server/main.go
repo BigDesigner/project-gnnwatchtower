@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"embed"
 	"encoding/pem"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
@@ -117,6 +118,9 @@ func main() {
 	log.Println("======================================================")
 
 	// 1. Resolve configuration
+	resetAdmin := flag.String("reset-admin", "", "Admin kullanıcısının parolasını doğrudan konsoldan sıfırlar (Örn: -reset-admin 'YeniParolaniz')")
+	flag.Parse()
+
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {
 		port = "3800"
@@ -133,6 +137,31 @@ func main() {
 		log.Fatalf("[FATAL] SQLite initialization failed: %v", err)
 	}
 	defer db.Close()
+
+	// If -reset-admin flag is provided, reset password and exit
+	if *resetAdmin != "" {
+		newPass := *resetAdmin
+		if len([]byte(newPass)) > 72 {
+			log.Fatalf("[HATA] Parola 72 bayttan uzun olamaz.")
+		}
+		if len(newPass) < 6 {
+			log.Fatalf("[HATA] Parola en az 6 karakter olmalıdır.")
+		}
+		newHash, err := database.HashPassword(newPass)
+		if err != nil {
+			log.Fatalf("[HATA] Parola hash üretilemedi: %v", err)
+		}
+		_, err = db.Exec("UPDATE users SET password_hash = $1, must_change_password = 0 WHERE username = 'admin'", newHash)
+		if err != nil {
+			log.Fatalf("[HATA] Parola güncellenemedi: %v", err)
+		}
+		_ = os.Remove("./data/initial_admin_password.txt")
+		log.Println("[GNNwatchtower Auth] ======================================================")
+		log.Println("[GNNwatchtower Auth] BAŞARILI: 'admin' kullanıcısının parolası güncellendi!")
+		log.Println("[GNNwatchtower Auth] Yeni belirlediğiniz parola ile doğrudan giriş yapabilirsiniz.")
+		log.Println("[GNNwatchtower Auth] ======================================================")
+		return
+	}
 
 	// 3. Initialize Ed25519 Update Signer
 	if err := api.InitUpdateSigner("./data"); err != nil {
