@@ -111,6 +111,12 @@ func runWindowsServiceIfUnderSCM(serverURL, token string, intervalSec int) bool 
 }
 
 func handleServiceCommand(cmd, serverURL, token string) bool {
+	if serverURL != "" {
+		saveServerURL(serverURL)
+	}
+	if token != "" {
+		_ = saveAgentKey(token)
+	}
 	switch strings.ToLower(cmd) {
 	case "install":
 		if err := installWindowsService(serverURL, token); err != nil {
@@ -132,8 +138,13 @@ func handleServiceCommand(cmd, serverURL, token string) bool {
 			log.Fatalf("[FATAL] Windows Service durdurma hatasi: %v", err)
 		}
 		os.Exit(0)
-	case "status":
-		queryWindowsServiceStatus()
+	case "restart":
+		if err := restartOSService(); err != nil {
+			log.Fatalf("[FATAL] Windows Service yeniden baslatma hatasi: %v", err)
+		}
+		os.Exit(0)
+	case "status", "diag":
+		runDiagnostics(serverURL, token)
 		os.Exit(0)
 	default:
 		return false
@@ -266,39 +277,52 @@ func stopWindowsService() error {
 	return nil
 }
 
-func queryWindowsServiceStatus() {
+func getOSServiceStatus() (string, bool) {
 	m, err := mgr.Connect()
 	if err != nil {
-		log.Printf("Hata: %v", err)
-		return
+		return "SCM erisilemedi (Yonetici yetkisi gerekebilir)", false
 	}
 	defer m.Disconnect()
 
 	s, err := m.OpenService(serviceName)
 	if err != nil {
-		log.Printf("Servis '%s' kurulu degil.", serviceName)
-		return
+		return "Kurulu Degil (Not Installed)", false
 	}
 	defer s.Close()
 
 	status, err := s.Query()
 	if err != nil {
-		log.Printf("Durum alinamadi: %v", err)
-		return
+		return "Durum Alinamadi", false
 	}
 
-	stateStr := "Bilinmiyor"
 	switch status.State {
-	case svc.Stopped:
-		stateStr = "Durduruldu (Stopped)"
-	case svc.StartPending:
-		stateStr = "Baslatiliyor (StartPending)"
-	case svc.StopPending:
-		stateStr = "Durduruluyor (StopPending)"
 	case svc.Running:
-		stateStr = "Calisiyor (Running)"
+		return "Calisiyor (Running)", true
+	case svc.Stopped:
+		return "Durduruldu (Stopped)", false
+	case svc.StartPending:
+		return "Baslatiliyor (StartPending)", false
+	case svc.StopPending:
+		return "Durduruluyor (StopPending)", false
+	case svc.Paused:
+		return "Duraklatildi (Paused)", false
+	default:
+		return fmt.Sprintf("Bilinmeyen (%d)", status.State), false
 	}
-	log.Printf("[GNNwatchtower Agent] Servis Durumu: %s", stateStr)
+}
+
+func startOSService() error {
+	return startWindowsService()
+}
+
+func stopOSService() error {
+	return stopWindowsService()
+}
+
+func restartOSService() error {
+	_ = stopWindowsService()
+	time.Sleep(1 * time.Second)
+	return startWindowsService()
 }
 
 func getMachineUUID() string {
@@ -326,16 +350,42 @@ func getOSVersionDetails() string {
 	return "Windows Server"
 }
 
-func getAgentKeyPath() string {
+func getAgentDir() string {
 	programFiles := os.Getenv("ProgramFiles")
 	if programFiles != "" {
-		return filepath.Join(programFiles, "GNNwatchtower-Agent", "agent.key")
+		p := filepath.Join(programFiles, "GNNwatchtower-Agent")
+		_ = os.MkdirAll(p, 0755)
+		return p
 	}
 	exe, err := os.Executable()
 	if err == nil {
-		return filepath.Join(filepath.Dir(exe), "agent.key")
+		return filepath.Dir(exe)
 	}
-	return "agent.key"
+	return "."
+}
+
+func getAgentKeyPath() string {
+	return filepath.Join(getAgentDir(), "agent.key")
+}
+
+func saveServerURL(serverURL string) {
+	if serverURL == "" {
+		return
+	}
+	p := filepath.Join(getAgentDir(), "server.url")
+	_ = os.WriteFile(p, []byte(strings.TrimSpace(serverURL)), 0644)
+}
+
+func loadServerURL() string {
+	p := filepath.Join(getAgentDir(), "server.url")
+	data, err := os.ReadFile(p)
+	if err == nil {
+		u := strings.TrimSpace(string(data))
+		if u != "" {
+			return u
+		}
+	}
+	return ""
 }
 
 func applyOSUpgrade(updateFile, currentExe string) error {

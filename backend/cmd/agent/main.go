@@ -193,9 +193,11 @@ func autoEnroll(serverURL string) (string, error) {
 func main() {
 	serverURL := flag.String("server", "http://127.0.0.1:3800", "GNNwatchtower Appliance URL")
 	token := flag.String("token", "", "GNNwatchtower Agent Token (Opsiyonel, bos ise otomatik kayit yapilir)")
-	serviceCmd := flag.String("service", "", "Servis islemleri: install, uninstall, start, stop, status")
+	serviceCmd := flag.String("service", "", "Servis islemleri: install, uninstall, start, stop, restart, status, diag")
 	intervalSec := flag.Int("interval", 15, "Periyodik heartbeat araligi (saniye)")
 	showVersion := flag.Bool("version", false, "Ajan surum numarasini gosterir")
+	diagFlag := flag.Bool("diag", false, "Etkilesimli servis kontrol ve teshis konsolunu acar")
+	statusFlag := flag.Bool("status", false, "Ajan ve servis durumunu gosterir")
 	flag.Parse()
 
 	if *showVersion {
@@ -203,16 +205,20 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 1. Check if invoked as service management command
-	if *serviceCmd != "" {
-		if handleServiceCommand(*serviceCmd, *serverURL, *token) {
-			os.Exit(0)
-		}
+	// 1. Resolve effective server URL (CLI flag -> Saved server.url -> Default)
+	resolvedServerURL := *serverURL
+	savedURL := loadServerURL()
+	if (resolvedServerURL == "" || resolvedServerURL == "http://127.0.0.1:3800") && savedURL != "" {
+		resolvedServerURL = savedURL
+	} else if resolvedServerURL != "" && resolvedServerURL != "http://127.0.0.1:3800" {
+		saveServerURL(resolvedServerURL)
 	}
 
-	// 2. Windows Service Control Manager runtime check
-	if runWindowsServiceIfUnderSCM(*serverURL, *token, *intervalSec) {
-		return
+	// 2. Check if invoked as service management command
+	if *serviceCmd != "" {
+		if handleServiceCommand(*serviceCmd, resolvedServerURL, *token) {
+			os.Exit(0)
+		}
 	}
 
 	// 3. Resolve agent token (CLI flag -> Local Key file -> Auto-Enrollment)
@@ -221,18 +227,36 @@ func main() {
 		resolvedToken = loadAgentKey()
 	}
 
+	// 4. If -diag or -status is passed, launch interactive diagnostics console
+	if *diagFlag || *statusFlag {
+		runDiagnostics(resolvedServerURL, resolvedToken)
+		os.Exit(0)
+	}
+
+	// 5. Windows Service Control Manager runtime check
+	if runWindowsServiceIfUnderSCM(resolvedServerURL, resolvedToken, *intervalSec) {
+		return
+	}
+
+	// 6. If run interactively on Windows with no arguments (e.g. double clicked in Explorer)
+	if len(os.Args) == 1 && runtime.GOOS == "windows" {
+		runDiagnostics(resolvedServerURL, resolvedToken)
+		os.Exit(0)
+	}
+
 	if resolvedToken == "" {
-		newToken, err := autoEnroll(*serverURL)
+		newToken, err := autoEnroll(resolvedServerURL)
 		if err != nil {
-			log.Fatalf("[FATAL] Ajan kaydi basarisiz: %v. Lutfen sunucunun (%s) erisilebilir oldugundan emin olunuz.", err, *serverURL)
+			log.Printf("[UYARI] Ajan otomatik kaydi yapilamadi: %v", err)
+		} else {
+			resolvedToken = newToken
 		}
-		resolvedToken = newToken
 	} else if *token != "" {
 		_ = saveAgentKey(*token)
 	}
 
 	hostname, _ := os.Hostname()
-	log.Printf("[GNNwatchtower Agent v%s] Baslatildi -> Hedef: %s (Cihaz: %s | %s/%s)", Version, *serverURL, hostname, runtime.GOOS, runtime.GOARCH)
+	log.Printf("[GNNwatchtower Agent v%s] Baslatildi -> Hedef: %s (Cihaz: %s | %s/%s)", Version, resolvedServerURL, hostname, runtime.GOOS, runtime.GOARCH)
 
 	// Graceful shutdown channel
 	shutdownChan := make(chan os.Signal, 1)
@@ -241,19 +265,31 @@ func main() {
 	go func() {
 		<-shutdownChan
 		log.Println("[GNNwatchtower Agent] Kapatma sinyali alindi! Merkeze Pre-Shutdown bildirimi gonderiliyor...")
-		sendPreShutdown(*serverURL, resolvedToken, hostname, "OS Graceful Shutdown / Restart")
+		sendPreShutdown(resolvedServerURL, resolvedToken, hostname, "OS Graceful Shutdown / Restart")
 		log.Println("[GNNwatchtower Agent] Pre-shutdown tamamlandi. Temiz cikis yapiliyor.")
 		os.Exit(0)
 	}()
 
-	runAgentLoop(*serverURL, resolvedToken, *intervalSec, nil)
+	runAgentLoop(resolvedServerURL, resolvedToken, *intervalSec, nil)
 }
 
 func runAgentLoop(serverURL, token string, intervalSec int, stopChan <-chan struct{}) {
 	hostname, _ := os.Hostname()
 
+	if token == "" {
+		token = loadAgentKey()
+	}
+	if token == "" {
+		if newToken, err := autoEnroll(serverURL); err == nil {
+			token = newToken
+		}
+	}
+
 	// Initial heartbeat immediately
-	resp := sendHeartbeat(serverURL, token, hostname)
+	resp, newToken := sendHeartbeat(serverURL, token, hostname)
+	if newToken != "" {
+		token = newToken
+	}
 	handleServerInstruction(serverURL, token, resp)
 
 	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
@@ -264,13 +300,22 @@ func runAgentLoop(serverURL, token string, intervalSec int, stopChan <-chan stru
 		case <-stopChan:
 			return
 		case <-ticker.C:
-			resp := sendHeartbeat(serverURL, token, hostname)
+			if token == "" {
+				token = loadAgentKey()
+			}
+			resp, newToken := sendHeartbeat(serverURL, token, hostname)
+			if newToken != "" {
+				token = newToken
+			}
 			handleServerInstruction(serverURL, token, resp)
 		}
 	}
 }
 
-func sendHeartbeat(serverURL, token, hostname string) *ServerHeartbeatResponse {
+func sendHeartbeat(serverURL, token, hostname string) (*ServerHeartbeatResponse, string) {
+	if token == "" {
+		token = loadAgentKey()
+	}
 	cpuPct, ramPct, diskPct, netRx, netTx, temp := getSystemMetrics()
 
 	upgradeMu.Lock()
@@ -301,13 +346,13 @@ func sendHeartbeat(serverURL, token, hostname string) *ServerHeartbeatResponse {
 
 	body, err := json.Marshal(report)
 	if err != nil {
-		return nil
+		return nil, token
 	}
 
 	url := fmt.Sprintf("%s/api/agent/report", serverURL)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	if err != nil {
-		return nil
+		return nil, token
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -317,22 +362,23 @@ func sendHeartbeat(serverURL, token, hostname string) *ServerHeartbeatResponse {
 	res, err := client.Do(req)
 	if err != nil {
 		log.Printf("[UYARI] Heartbeat gonderilemedi (%s): %v", url, err)
-		return nil
+		return nil, token
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode == http.StatusOK {
 		var sResp ServerHeartbeatResponse
 		if err := json.NewDecoder(res.Body).Decode(&sResp); err == nil {
-			return &sResp
+			return &sResp, token
 		}
 	} else if res.StatusCode == http.StatusUnauthorized {
 		log.Printf("[UYARI] Sunucu token'i reddetti (401). Yeniden kayit denenecek...")
 		if newToken, err := autoEnroll(serverURL); err == nil {
 			_ = saveAgentKey(newToken)
+			return nil, newToken
 		}
 	}
-	return nil
+	return nil, token
 }
 
 func sendPreShutdown(serverURL, token, hostname, reason string) {
@@ -385,12 +431,12 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 
 	setUpgradeState("downloading", "")
 	hostname, _ := os.Hostname()
-	sendHeartbeat(serverURL, token, hostname)
+	_, _ = sendHeartbeat(serverURL, token, hostname)
 
 	exePath, err := os.Executable()
 	if err != nil {
 		setUpgradeState("failed", fmt.Sprintf("Executable path error: %v", err))
-		sendHeartbeat(serverURL, token, hostname)
+		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
 
@@ -406,21 +452,21 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 	resp, err := client.Get(fullDownloadURL)
 	if err != nil {
 		setUpgradeState("failed", fmt.Sprintf("Download error: %v", err))
-		sendHeartbeat(serverURL, token, hostname)
+		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		setUpgradeState("failed", fmt.Sprintf("HTTP %d download failure", resp.StatusCode))
-		sendHeartbeat(serverURL, token, hostname)
+		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
 
 	out, err := os.Create(tmpFile)
 	if err != nil {
 		setUpgradeState("failed", fmt.Sprintf("Cannot create file: %v", err))
-		sendHeartbeat(serverURL, token, hostname)
+		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
 
@@ -432,7 +478,7 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 	if err != nil {
 		_ = os.Remove(tmpFile)
 		setUpgradeState("failed", fmt.Sprintf("Write error: %v", err))
-		sendHeartbeat(serverURL, token, hostname)
+		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
 
@@ -441,20 +487,20 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 	if expectedSHA256 != "" && !strings.EqualFold(computedSHA, expectedSHA256) {
 		_ = os.Remove(tmpFile)
 		setUpgradeState("failed", fmt.Sprintf("SHA256 uyusmazligi! Beklenen: %s, Hesaplanan: %s", expectedSHA256, computedSHA))
-		sendHeartbeat(serverURL, token, hostname)
+		_, _ = sendHeartbeat(serverURL, token, hostname)
 		log.Printf("[HATA] Guncelleme ikili dosyasinin SHA256 ozeti dogrulanamadi!")
 		return
 	}
 
 	log.Printf("[OK] Yeni ajan ikili dosyasi SHA256 ile basariyla dogrulandi (%s).", computedSHA)
 	setUpgradeState("applying", "")
-	sendHeartbeat(serverURL, token, hostname)
+	_, _ = sendHeartbeat(serverURL, token, hostname)
 
 	// Apply OS atomic swap & restart
 	if err := applyOSUpgrade(tmpFile, exePath); err != nil {
 		_ = os.Remove(tmpFile)
 		setUpgradeState("failed", fmt.Sprintf("Swap error: %v", err))
-		sendHeartbeat(serverURL, token, hostname)
+		_, _ = sendHeartbeat(serverURL, token, hostname)
 		log.Printf("[HATA] Guncelleme uygulanamadi: %v", err)
 	}
 }

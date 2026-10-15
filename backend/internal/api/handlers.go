@@ -877,6 +877,12 @@ func AgentEnroll(c *gin.Context) {
 		`, targetIP).Scan(&devID, &existingName)
 	}
 
+	if devID == 0 && req.Hostname != "" {
+		_ = database.DB.QueryRow(`
+			SELECT id, name FROM devices WHERE LOWER(name) = LOWER($1)
+		`, req.Hostname).Scan(&devID, &existingName)
+	}
+
 	if devID > 0 {
 		// Existing device enrolled!
 		_, _ = database.DB.Exec(`
@@ -932,24 +938,24 @@ func AgentHeartbeat(c *gin.Context) {
 	if token == "" {
 		token = report.Token
 	}
-	if token == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Agent token eksik"})
-		return
-	}
 
 	var devID int
 	var devName string
 	var devType string
 	var upgStatus string
 	var upgTarget string
-	err := database.DB.QueryRow(`
-		SELECT id, name, device_type, COALESCE(agent_upgrade_status, 'none'), COALESCE(agent_upgrade_target, '')
-		FROM devices 
-		WHERE agent_token = $1
-	`, token).Scan(&devID, &devName, &devType, &upgStatus, &upgTarget)
+	var err error = sql.ErrNoRows
+
+	if token != "" {
+		err = database.DB.QueryRow(`
+			SELECT id, name, device_type, COALESCE(agent_upgrade_status, 'none'), COALESCE(agent_upgrade_target, '')
+			FROM devices 
+			WHERE agent_token = $1
+		`, token).Scan(&devID, &devName, &devType, &upgStatus, &upgTarget)
+	}
 
 	if err != nil {
-		// Device not found with this token -> fallback match by IP or suggest enrollment
+		// Device not found with this token -> fallback match by Machine UUID, IP, or Hostname
 		clientIP := c.ClientIP()
 		targetIP := report.LocalIP
 		if targetIP == "" || targetIP == "127.0.0.1" || strings.HasPrefix(targetIP, "127.") || targetIP == "::1" {
@@ -958,18 +964,45 @@ func AgentHeartbeat(c *gin.Context) {
 
 		var existingID int
 		var existingName string
-		findErr := database.DB.QueryRow(`
-			SELECT id, name FROM devices WHERE ip_address = $1
-		`, targetIP).Scan(&existingID, &existingName)
+		var findErr error = sql.ErrNoRows
 
-		if findErr == nil {
+		if report.MachineUUID != "" {
+			findErr = database.DB.QueryRow(`
+				SELECT id, name FROM devices WHERE machine_uuid = $1
+			`, report.MachineUUID).Scan(&existingID, &existingName)
+		}
+		if findErr != nil || existingID == 0 {
+			findErr = database.DB.QueryRow(`
+				SELECT id, name FROM devices WHERE ip_address = $1
+			`, targetIP).Scan(&existingID, &existingName)
+		}
+		if (findErr != nil || existingID == 0) && report.Hostname != "" {
+			findErr = database.DB.QueryRow(`
+				SELECT id, name FROM devices WHERE LOWER(name) = LOWER($1)
+			`, report.Hostname).Scan(&existingID, &existingName)
+		}
+
+		if findErr == nil && existingID > 0 {
 			devID = existingID
 			devName = existingName
-			_, _ = database.DB.Exec(`
-				UPDATE devices 
-				SET agent_token = $1, is_agent_installed = 1, status = 'online', last_seen_at = CURRENT_TIMESTAMP 
-				WHERE id = $2
-			`, token, devID)
+			_ = database.DB.QueryRow(`
+				SELECT device_type, COALESCE(agent_upgrade_status, 'none'), COALESCE(agent_upgrade_target, '')
+				FROM devices WHERE id = $1
+			`, devID).Scan(&devType, &upgStatus, &upgTarget)
+
+			if token != "" {
+				_, _ = database.DB.Exec(`
+					UPDATE devices 
+					SET agent_token = $1, is_agent_installed = 1, status = 'online', last_seen_at = CURRENT_TIMESTAMP 
+					WHERE id = $2
+				`, token, devID)
+			} else {
+				_, _ = database.DB.Exec(`
+					UPDATE devices 
+					SET is_agent_installed = 1, status = 'online', last_seen_at = CURRENT_TIMESTAMP 
+					WHERE id = $1
+				`, devID)
+			}
 		} else {
 			name := report.Hostname
 			if name == "" {
@@ -983,7 +1016,7 @@ func AgentHeartbeat(c *gin.Context) {
 				INSERT INTO devices (name, ip_address, device_type, os_version, is_agent_installed, agent_token, agent_version, machine_uuid, status, last_seen_at)
 				VALUES ($1, $2, $3, $4, 1, $5, $6, $7, 'online', CURRENT_TIMESTAMP)
 				ON CONFLICT (ip_address) DO UPDATE SET
-					agent_token = EXCLUDED.agent_token,
+					agent_token = CASE WHEN EXCLUDED.agent_token != '' THEN EXCLUDED.agent_token ELSE devices.agent_token END,
 					is_agent_installed = 1,
 					status = 'online',
 					last_seen_at = CURRENT_TIMESTAMP
@@ -1343,6 +1376,9 @@ try {
 }
 
 Write-Host "[GNNwatchtower] Windows Ajan basariyla kuruldu, otomatik olarak kaydoldu (Auto-Enrollment) ve baslatildi!" -ForegroundColor Green
+Write-Host ""
+Write-Host "[BILGI] Hizmet durumunu izlemek ve ag/port erisimini test etmek icin:" -ForegroundColor Cyan
+Write-Host "        & '$agentExe' -diag" -ForegroundColor Yellow
 `, serverURL)
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")

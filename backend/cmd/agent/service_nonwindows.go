@@ -24,6 +24,12 @@ func logEvent(eventType uint32, msg string) {
 }
 
 func handleServiceCommand(cmd, serverURL, token string) bool {
+	if serverURL != "" {
+		saveServerURL(serverURL)
+	}
+	if token != "" {
+		_ = saveAgentKey(token)
+	}
 	switch strings.ToLower(cmd) {
 	case "install":
 		if err := installLinuxService(serverURL, token); err != nil {
@@ -36,18 +42,25 @@ func handleServiceCommand(cmd, serverURL, token string) bool {
 		}
 		os.Exit(0)
 	case "start":
-		_ = exec.Command("systemctl", "start", "gnnwatchtower-agent").Run()
+		if err := startOSService(); err != nil {
+			log.Fatalf("[FATAL] Servis baslatilamadi: %v", err)
+		}
 		log.Println("[OK] gnnwatchtower-agent servisi baslatildi.")
 		os.Exit(0)
 	case "stop":
-		_ = exec.Command("systemctl", "stop", "gnnwatchtower-agent").Run()
+		if err := stopOSService(); err != nil {
+			log.Fatalf("[FATAL] Servis durdurulamadi: %v", err)
+		}
 		log.Println("[OK] gnnwatchtower-agent servisi durduruldu.")
 		os.Exit(0)
-	case "status":
-		c := exec.Command("systemctl", "status", "gnnwatchtower-agent", "--no-pager")
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		_ = c.Run()
+	case "restart":
+		if err := restartOSService(); err != nil {
+			log.Fatalf("[FATAL] Servis yeniden baslatma hatasi: %v", err)
+		}
+		log.Println("[OK] gnnwatchtower-agent servisi yeniden baslatildi.")
+		os.Exit(0)
+	case "status", "diag":
+		runDiagnostics(serverURL, token)
 		os.Exit(0)
 	default:
 		return false
@@ -56,6 +69,12 @@ func handleServiceCommand(cmd, serverURL, token string) bool {
 }
 
 func installLinuxService(serverURL, token string) error {
+	if serverURL != "" {
+		saveServerURL(serverURL)
+	}
+	if token != "" {
+		_ = saveAgentKey(token)
+	}
 	exePath, err := os.Executable()
 	if err != nil {
 		return err
@@ -143,16 +162,64 @@ func getOSVersionDetails() string {
 	return "Linux"
 }
 
-func getAgentKeyPath() string {
+func getAgentDir() string {
 	installDir := "/opt/gnnwatchtower-agent"
 	if _, err := os.Stat(installDir); err == nil {
-		return filepath.Join(installDir, "agent.key")
+		return installDir
 	}
 	exe, err := os.Executable()
 	if err == nil {
-		return filepath.Join(filepath.Dir(exe), "agent.key")
+		return filepath.Dir(exe)
 	}
-	return "agent.key"
+	return "."
+}
+
+func getAgentKeyPath() string {
+	return filepath.Join(getAgentDir(), "agent.key")
+}
+
+func saveServerURL(serverURL string) {
+	if serverURL == "" {
+		return
+	}
+	p := filepath.Join(getAgentDir(), "server.url")
+	_ = os.WriteFile(p, []byte(strings.TrimSpace(serverURL)), 0644)
+}
+
+func loadServerURL() string {
+	p := filepath.Join(getAgentDir(), "server.url")
+	data, err := os.ReadFile(p)
+	if err == nil {
+		u := strings.TrimSpace(string(data))
+		if u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+func getOSServiceStatus() (string, bool) {
+	out, err := exec.Command("systemctl", "is-active", "gnnwatchtower-agent").Output()
+	state := strings.TrimSpace(string(out))
+	if err == nil && state == "active" {
+		return "Calisiyor (Active/Running)", true
+	}
+	if state != "" {
+		return fmt.Sprintf("Durduruldu (%s)", state), false
+	}
+	return "Kurulu Degil veya Inaktif", false
+}
+
+func startOSService() error {
+	return exec.Command("systemctl", "start", "gnnwatchtower-agent").Run()
+}
+
+func stopOSService() error {
+	return exec.Command("systemctl", "stop", "gnnwatchtower-agent").Run()
+}
+
+func restartOSService() error {
+	return exec.Command("systemctl", "restart", "gnnwatchtower-agent").Run()
 }
 
 func applyOSUpgrade(updateFile, currentExe string) error {
