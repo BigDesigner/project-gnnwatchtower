@@ -137,19 +137,50 @@ func saveAgentKey(token string) error {
 	return os.WriteFile(keyPath, []byte(token), 0600)
 }
 
-func autoEnroll(serverURL string) (string, error) {
+func loadEnrollKey() string {
+	keyPath := getEnrollKeyPath()
+	data, err := os.ReadFile(keyPath)
+	if err == nil {
+		k := strings.TrimSpace(string(data))
+		if len(k) >= 8 {
+			return k
+		}
+	}
+	return ""
+}
+
+func saveEnrollKey(key string) error {
+	k := strings.TrimSpace(key)
+	if k == "" {
+		return nil
+	}
+	keyPath := getEnrollKeyPath()
+	dir := os.Getenv("ProgramFiles")
+	if dir != "" && runtime.GOOS == "windows" {
+		_ = os.MkdirAll(fmt.Sprintf("%s\\GNNwatchtower-Agent", dir), 0755)
+	} else if runtime.GOOS == "linux" {
+		_ = os.MkdirAll("/opt/gnnwatchtower-agent", 0755)
+	}
+	return os.WriteFile(keyPath, []byte(k), 0600)
+}
+
+func autoEnroll(serverURL, enrollKey string) (string, error) {
+	if enrollKey == "" {
+		enrollKey = loadEnrollKey()
+	}
 	log.Printf("[GNNwatchtower Agent] Token bulunamadi. Otomatik kayit (Auto-Enrollment) baslatiliyor...")
 
 	hostname, _ := os.Hostname()
 	reqBody := map[string]interface{}{
-		"hostname":      hostname,
-		"local_ip":      getLocalIP(serverURL),
-		"mac_address":   getMACAddress(),
-		"os_name":       runtime.GOOS,
-		"os_version":    getOSVersionDetails(),
-		"arch":          runtime.GOARCH,
-		"machine_uuid":  getMachineUUID(),
-		"agent_version": Version,
+		"enrollment_key": enrollKey,
+		"hostname":       hostname,
+		"local_ip":       getLocalIP(serverURL),
+		"mac_address":    getMACAddress(),
+		"os_name":        runtime.GOOS,
+		"os_version":     getOSVersionDetails(),
+		"arch":           runtime.GOARCH,
+		"machine_uuid":   getMachineUUID(),
+		"agent_version":  Version,
 	}
 
 	jsonBytes, err := json.Marshal(reqBody)
@@ -158,8 +189,17 @@ func autoEnroll(serverURL string) (string, error) {
 	}
 
 	enrollURL := fmt.Sprintf("%s/api/agent/enroll", serverURL)
+	req, err := http.NewRequest("POST", enrollURL, bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if enrollKey != "" {
+		req.Header.Set("X-Enrollment-Key", enrollKey)
+	}
+
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(enrollURL, "application/json", bytes.NewBuffer(jsonBytes))
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("kayit istegi gonderilemedi (%s): %w", enrollURL, err)
 	}
@@ -194,6 +234,7 @@ func autoEnroll(serverURL string) (string, error) {
 func main() {
 	serverURL := flag.String("server", "", "GNNwatchtower Appliance URL (Orn: http://10.38.1.13:3800)")
 	token := flag.String("token", "", "GNNwatchtower Agent Token (Opsiyonel, bos ise otomatik kayit yapilir)")
+	enrollKeyFlag := flag.String("enroll-key", "", "GNNwatchtower Ajan Kayıt Anahtarı (Agent Enrollment Key)")
 	serviceCmd := flag.String("service", "", "Servis islemleri: install, uninstall, start, stop, restart, status, diag")
 	intervalSec := flag.Int("interval", 15, "Periyodik heartbeat araligi (saniye)")
 	showVersion := flag.Bool("version", false, "Ajan surum numarasini gosterir")
@@ -204,6 +245,10 @@ func main() {
 	if *showVersion {
 		fmt.Printf("GNNwatchtower Enterprise Telemetry Agent v%s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
 		os.Exit(0)
+	}
+
+	if *enrollKeyFlag != "" {
+		_ = saveEnrollKey(*enrollKeyFlag)
 	}
 
 	// 1. Resolve effective server URL (CLI flag -> Saved server.url / SCM ImagePath -> Default)
@@ -222,7 +267,7 @@ func main() {
 
 	// 2. Check if invoked as service management command
 	if *serviceCmd != "" {
-		if handleServiceCommand(*serviceCmd, resolvedServerURL, *token) {
+		if handleServiceCommand(*serviceCmd, resolvedServerURL, *token, *enrollKeyFlag) {
 			os.Exit(0)
 		}
 	}
@@ -251,7 +296,7 @@ func main() {
 	}
 
 	if resolvedToken == "" {
-		newToken, err := autoEnroll(resolvedServerURL)
+		newToken, err := autoEnroll(resolvedServerURL, *enrollKeyFlag)
 		if err != nil {
 			log.Printf("[UYARI] Ajan otomatik kaydi yapilamadi: %v", err)
 		} else {
@@ -297,7 +342,7 @@ func runAgentLoop(serverURL, token string, intervalSec int, stopChan <-chan stru
 		token = loadAgentKey()
 	}
 	if token == "" {
-		if newToken, err := autoEnroll(serverURL); err == nil {
+		if newToken, err := autoEnroll(serverURL, loadEnrollKey()); err == nil {
 			token = newToken
 		}
 	}
@@ -393,7 +438,7 @@ func sendHeartbeat(serverURL, token, hostname string) (*ServerHeartbeatResponse,
 	} else if res.StatusCode == http.StatusUnauthorized {
 		log.Printf("[UYARI] Sunucu token'i reddetti (401). Yeniden kayit denenecek...")
 		logToFile("[UYARI] Sunucu token'i reddetti (401)")
-		if newToken, err := autoEnroll(serverURL); err == nil {
+		if newToken, err := autoEnroll(serverURL, loadEnrollKey()); err == nil {
 			_ = saveAgentKey(newToken)
 			return nil, newToken
 		}

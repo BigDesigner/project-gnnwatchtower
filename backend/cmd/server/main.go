@@ -2,13 +2,22 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"embed"
+	"encoding/pem"
 	"fmt"
 	"io/fs"
 	"log"
+	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,6 +26,85 @@ import (
 	"gnnwatchtower/internal/database"
 	"gnnwatchtower/internal/monitor"
 )
+
+// ensureSelfSignedCert creates a zero-dependency self-signed ECDSA certificate for HTTPS
+func ensureSelfSignedCert(certPath, keyPath string) error {
+	if _, err := os.Stat(certPath); err == nil {
+		if _, err := os.Stat(keyPath); err == nil {
+			return nil
+		}
+	}
+
+	dir := filepath.Dir(certPath)
+	if dir != "" {
+		_ = os.MkdirAll(dir, 0755)
+	}
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+
+	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		return err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"GNNwatchtower Appliance"},
+			CommonName:   "gnnwatchtower.local",
+		},
+		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("0.0.0.0")},
+		DNSNames:              []string{"localhost", "gnnwatchtower", "gnnwatchtower.local"},
+	}
+
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok {
+				template.IPAddresses = append(template.IPAddresses, ipnet.IP)
+			}
+		}
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return err
+	}
+
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return err
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		return err
+	}
+
+	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer keyOut.Close()
+
+	b, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return err
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}); err != nil {
+		return err
+	}
+
+	log.Printf("[GNNwatchtower TLS] Generated self-signed SSL/TLS certificate (%s, %s)", certPath, keyPath)
+	return nil
+}
 
 //go:embed dist/*
 var embeddedDist embed.FS
@@ -76,13 +164,35 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// 7. Start HTTP Server in background
-	go func() {
-		log.Printf("[GNNwatchtower Appliance] Dashboard & API listening on http://0.0.0.0:%s", port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("[FATAL] HTTP Server failed: %v", err)
+	// 7. Start HTTP / HTTPS Server in background
+	tlsEnabled := os.Getenv("TLS_ENABLED") == "true" || os.Getenv("TLS_ENABLED") == "1"
+	certFile := os.Getenv("TLS_CERT_FILE")
+	keyFile := os.Getenv("TLS_KEY_FILE")
+
+	if tlsEnabled || certFile != "" || keyFile != "" {
+		if certFile == "" {
+			certFile = "./data/cert.pem"
 		}
-	}()
+		if keyFile == "" {
+			keyFile = "./data/key.pem"
+		}
+		if err := ensureSelfSignedCert(certFile, keyFile); err != nil {
+			log.Fatalf("[FATAL] TLS certificate generation/load failed: %v", err)
+		}
+		go func() {
+			log.Printf("[GNNwatchtower Appliance] Secure Dashboard & API listening on https://0.0.0.0:%s", port)
+			if err := server.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("[FATAL] HTTPS Server failed: %v", err)
+			}
+		}()
+	} else {
+		go func() {
+			log.Printf("[GNNwatchtower Appliance] Dashboard & API listening on http://0.0.0.0:%s", port)
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("[FATAL] HTTP Server failed: %v", err)
+			}
+		}()
+	}
 
 	// 8. Graceful Shutdown listener
 	quit := make(chan os.Signal, 1)

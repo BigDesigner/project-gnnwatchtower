@@ -120,16 +120,19 @@ func runWindowsServiceIfUnderSCM(serverURL, token string, intervalSec int) bool 
 	return false
 }
 
-func handleServiceCommand(cmd, serverURL, token string) bool {
+func handleServiceCommand(cmd, serverURL, token, enrollKey string) bool {
 	if serverURL != "" {
 		saveServerURL(serverURL)
 	}
 	if token != "" {
 		_ = saveAgentKey(token)
 	}
+	if enrollKey != "" {
+		_ = saveEnrollKey(enrollKey)
+	}
 	switch strings.ToLower(cmd) {
 	case "install":
-		if err := installWindowsService(serverURL, token); err != nil {
+		if err := installWindowsService(serverURL, token, enrollKey); err != nil {
 			log.Fatalf("[FATAL] Windows Service kurulum hatasi: %v", err)
 		}
 		os.Exit(0)
@@ -162,7 +165,16 @@ func handleServiceCommand(cmd, serverURL, token string) bool {
 	return true
 }
 
-func installWindowsService(serverURL, token string) error {
+func installWindowsService(serverURL, token, enrollKey string) error {
+	if serverURL != "" {
+		saveServerURL(serverURL)
+	}
+	if token != "" {
+		_ = saveAgentKey(token)
+	}
+	if enrollKey != "" {
+		_ = saveEnrollKey(enrollKey)
+	}
 	exePath, err := os.Executable()
 	if err != nil {
 		return err
@@ -385,6 +397,10 @@ func getAgentDir() string {
 
 func getAgentKeyPath() string {
 	return filepath.Join(getAgentDir(), "agent.key")
+}
+
+func getEnrollKeyPath() string {
+	return filepath.Join(getAgentDir(), "enroll.key")
 }
 
 func saveServerURL(serverURL string) {

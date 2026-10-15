@@ -133,14 +133,15 @@ type AgentReport struct {
 
 // AgentEnrollRequest represents zero-touch agent enrollment
 type AgentEnrollRequest struct {
-	Hostname     string `json:"hostname" binding:"required"`
-	LocalIP      string `json:"local_ip"`
-	MACAddress   string `json:"mac_address"`
-	OSName       string `json:"os_name"`
-	OSVersion    string `json:"os_version"`
-	Architecture string `json:"arch"`
-	MachineUUID  string `json:"machine_uuid"`
-	AgentVersion string `json:"agent_version"`
+	EnrollmentKey string `json:"enrollment_key"`
+	Hostname      string `json:"hostname" binding:"required"`
+	LocalIP       string `json:"local_ip"`
+	MACAddress    string `json:"mac_address"`
+	OSName        string `json:"os_name"`
+	OSVersion     string `json:"os_version"`
+	Architecture  string `json:"arch"`
+	MachineUUID   string `json:"machine_uuid"`
+	AgentVersion  string `json:"agent_version"`
 }
 
 // AgentEnrollResponse represents enrollment approval and token credentials

@@ -689,7 +689,9 @@
 
     <ChangePasswordModal 
       :isOpen="isChangePasswordOpen"
+      :forced="isChangePasswordForced"
       @close="isChangePasswordOpen = false"
+      @password-changed="isChangePasswordForced = false"
     />
 
     <LoginModal 
@@ -734,6 +736,7 @@ const isAddDeviceOpen = ref(false)
 const isClassifyOpen = ref(false)
 const isSettingsOpen = ref(false)
 const isChangePasswordOpen = ref(false)
+const isChangePasswordForced = ref(false)
 const isLoginOpen = ref(false)
 
 const deviceToEdit = ref(null)
@@ -916,8 +919,12 @@ const handleLogout = () => {
   isLoginOpen.value = true
 }
 
-const handleLoginSuccess = () => {
+const handleLoginSuccess = (loginData) => {
   isLoginOpen.value = false
+  if (loginData?.must_change_password) {
+    isChangePasswordForced.value = true
+    isChangePasswordOpen.value = true
+  }
   fetchData()
 }
 

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -8,10 +9,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gnnwatchtower/internal/version"
 
+	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
@@ -75,6 +78,7 @@ func migrateSchema(db *sql.DB) error {
 		username TEXT UNIQUE NOT NULL,
 		password_hash TEXT NOT NULL,
 		role TEXT DEFAULT 'admin',
+		must_change_password INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -200,27 +204,58 @@ func migrateSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_error TEXT DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_last_upgrade_at DATETIME")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN machine_uuid TEXT DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
 
 	// Automatically upgrade agent_latest_version to current release
 	_, _ = db.Exec("UPDATE system_settings SET value = $1 WHERE key = 'agent_latest_version'", version.Get())
 
-	// Create default admin user if no users exist (admin / admin)
+	// Ensure agent_enrollment_key exists in system_settings
+	var enrollKey string
+	_ = db.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&enrollKey)
+	if enrollKey == "" {
+		kBytes := make([]byte, 24)
+		_, _ = rand.Read(kBytes)
+		enrollKey = hex.EncodeToString(kBytes)
+		_, _ = db.Exec(`
+			INSERT INTO system_settings (key, value, description) 
+			VALUES ('agent_enrollment_key', $1, 'Ajan ilk kayıt doğrulama gizli anahtarı')
+			ON CONFLICT(key) DO UPDATE SET value = $1 WHERE value = ''
+		`, enrollKey)
+		log.Printf("[GNNwatchtower Security] Initialized Agent Enrollment Key: %s...", enrollKey[:8])
+	}
+
+	// Create default admin user if no users exist (admin / admin, must change password)
 	var count int
 	_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
 	if count == 0 {
 		hash := HashPassword("admin")
-		_, _ = db.Exec("INSERT INTO users (username, password_hash, role) VALUES ('admin', $1, 'admin')", hash)
-		log.Printf("[GNNwatchtower Auth] Default admin account created (username: admin, password: admin)")
+		_, _ = db.Exec("INSERT INTO users (username, password_hash, role, must_change_password) VALUES ('admin', $1, 'admin', 1)", hash)
+		log.Printf("[GNNwatchtower Auth] Default admin account created (username: admin, password: admin, must_change_password: 1)")
 	}
 
 	return nil
 }
 
-// HashPassword calculates SHA-256 hash
+// HashPassword calculates secure bcrypt hash with cost 12
 func HashPassword(password string) string {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		h := sha256.New()
+		h.Write([]byte(password + "_gnnwatchtower_salt_2026"))
+		return hex.EncodeToString(h.Sum(nil))
+	}
+	return string(bytes)
+}
+
+// VerifyPassword checks candidate password against bcrypt or legacy SHA-256 hash
+func VerifyPassword(password, hash string) bool {
+	if strings.HasPrefix(hash, "$2a$") || strings.HasPrefix(hash, "$2b$") || strings.HasPrefix(hash, "$2y$") {
+		return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+	}
+	// Fallback for legacy SHA-256 hash
 	h := sha256.New()
 	h.Write([]byte(password + "_gnnwatchtower_salt_2026"))
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)) == hash
 }
 
 func getEnv(key, fallback string) string {

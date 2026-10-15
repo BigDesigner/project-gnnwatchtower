@@ -17,9 +17,21 @@
         <div class="p-3 rounded bg-blue-950/30 border border-blue-900/40 text-blue-300 text-[11px] leading-relaxed flex items-start gap-2.5">
           <span class="material-symbols-outlined text-[18px] text-blue-400 shrink-0 mt-0.5">info</span>
           <div>
-            <span class="font-semibold text-white">Otomatik Kayıt (Zero-Touch Auto-Enrollment):</span>
-            Ajan uç noktaya kurulduktan sonra donanım parmak izi ile merkeze otomatik tescil edilir ve şifreli yerel anahtar üretilir. Komut satırında veya betiklerde gizli token bulunmaz; EDR/XDR sistemleri tarafından güvenle karşılanır.
+            <span class="font-semibold text-white">Güvenli Otomatik Kayıt (Zero-Touch Auto-Enrollment):</span>
+            Ajanlar merkeze kayıt anahtarı (Enrollment Key) ile tescil edilir ve şifreli yerel oturum tokenı üretir. Yetkisiz uç noktaların telemetri göndermesi veya cihaz taklidi yapması engellenir.
           </div>
+        </div>
+
+        <div v-if="enrollmentKey" class="flex items-center justify-between p-2.5 rounded bg-[#0c0e12] border border-[#232936] text-[11px]">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-[16px] text-amber-400">key</span>
+            <span class="text-txt-muted">Ajan Kayıt Anahtarı:</span>
+            <span class="font-mono text-txt-primary font-semibold select-all">{{ enrollmentKey }}</span>
+          </div>
+          <button @click="copyText(enrollmentKey, 'key')" class="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-[11px]">
+            <span class="material-symbols-outlined text-[14px]">content_copy</span>
+            <span>{{ copied === 'key' ? 'Kopyalandı!' : 'Anahtarı Kopyala' }}</span>
+          </button>
         </div>
 
         <!-- Deployment Method Tabs -->
@@ -112,7 +124,7 @@
           <div class="flex flex-col gap-1.5">
             <span class="text-txt-muted text-[11px] font-medium">Hizmet Kurulum Komutu (GPO / Komut Satırı):</span>
             <div class="p-2.5 rounded bg-[#0c0e12] border border-[#232936] font-mono text-[11px] text-txt-primary select-all">
-              gnnwatchtower-agent.exe -service install -server {{ hostUrl }}
+              gnnwatchtower-agent.exe -service install -server {{ hostUrl }}{{ enrollmentKey ? ` -enroll-key "${enrollmentKey}"` : '' }}
             </div>
             <div class="p-2.5 rounded bg-[#0c0e12] border border-[#232936] font-mono text-[11px] text-txt-primary select-all">
               gnnwatchtower-agent.exe -service start
@@ -132,8 +144,9 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { APP_VERSION } from '../version'
+import api from '../services/api'
 
 const props = defineProps({
   isOpen: Boolean
@@ -143,6 +156,17 @@ defineEmits(['close'])
 
 const copied = ref('')
 const activeMethod = ref('powershell')
+const enrollmentKey = ref('')
+
+watch(() => props.isOpen, (newVal) => {
+  if (newVal) {
+    api.getSettings().then(s => {
+      if (s && s.agent_enrollment_key) {
+        enrollmentKey.value = s.agent_enrollment_key
+      }
+    }).catch(() => {})
+  }
+}, { immediate: true })
 
 const hostUrl = computed(() => {
   return window.location.origin
@@ -153,7 +177,8 @@ const linuxCmd = computed(() => {
 })
 
 const winCmd = computed(() => {
-  return `New-Item -ItemType Directory -Force -Path "C:\\Program Files\\GNNwatchtower-Agent"; Invoke-WebRequest -Uri "${hostUrl.value}/api/agent/download/windows" -OutFile "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe"; & "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe" -service install -server "${hostUrl.value}"; & "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe" -service start`
+  const enrollFlag = enrollmentKey.value ? ` -enroll-key \\"${enrollmentKey.value}\\"` : ''
+  return `New-Item -ItemType Directory -Force -Path "C:\\Program Files\\GNNwatchtower-Agent"; Invoke-WebRequest -Uri "${hostUrl.value}/api/agent/download/windows" -OutFile "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe"; & "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe" -service install -server "${hostUrl.value}"${enrollFlag}; & "C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe" -service start`
 })
 
 const copyText = async (text, type) => {

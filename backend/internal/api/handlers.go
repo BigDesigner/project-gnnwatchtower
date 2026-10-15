@@ -838,6 +838,20 @@ func AgentEnroll(c *gin.Context) {
 		return
 	}
 
+	// Validate Agent Enrollment Key
+	var serverEnrollKey string
+	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&serverEnrollKey)
+
+	reqEnrollKey := c.GetHeader("X-Enrollment-Key")
+	if reqEnrollKey == "" {
+		reqEnrollKey = req.EnrollmentKey
+	}
+
+	if serverEnrollKey != "" && (reqEnrollKey == "" || reqEnrollKey != serverEnrollKey) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz veya eksik ajan kayıt anahtarı (Enrollment Key)"})
+		return
+	}
+
 	clientIP := c.ClientIP()
 	targetIP := req.LocalIP
 	if targetIP == "" || targetIP == "127.0.0.1" || strings.HasPrefix(targetIP, "127.") || targetIP == "::1" {
@@ -941,99 +955,26 @@ func AgentHeartbeat(c *gin.Context) {
 		token = report.Token
 	}
 
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Ajan yetkilendirme tokenı zorunludur"})
+		return
+	}
+
 	var devID int
 	var devName string
 	var devType string
 	var upgStatus string
 	var upgTarget string
-	var err error = sql.ErrNoRows
 
-	if token != "" {
-		err = database.DB.QueryRow(`
-			SELECT id, name, device_type, COALESCE(agent_upgrade_status, 'none'), COALESCE(agent_upgrade_target, '')
-			FROM devices 
-			WHERE agent_token = $1
-		`, token).Scan(&devID, &devName, &devType, &upgStatus, &upgTarget)
-	}
+	err := database.DB.QueryRow(`
+		SELECT id, name, device_type, COALESCE(agent_upgrade_status, 'none'), COALESCE(agent_upgrade_target, '')
+		FROM devices 
+		WHERE agent_token = $1
+	`, token).Scan(&devID, &devName, &devType, &upgStatus, &upgTarget)
 
 	if err != nil {
-		// Device not found with this token -> fallback match by Machine UUID, IP, or Hostname
-		clientIP := c.ClientIP()
-		targetIP := report.LocalIP
-		if targetIP == "" || targetIP == "127.0.0.1" || strings.HasPrefix(targetIP, "127.") || targetIP == "::1" {
-			targetIP = clientIP
-		}
-
-		var existingID int
-		var existingName string
-		var findErr error = sql.ErrNoRows
-
-		if report.MachineUUID != "" {
-			findErr = database.DB.QueryRow(`
-				SELECT id, name FROM devices WHERE machine_uuid = $1
-			`, report.MachineUUID).Scan(&existingID, &existingName)
-		}
-		if findErr != nil || existingID == 0 {
-			findErr = database.DB.QueryRow(`
-				SELECT id, name FROM devices WHERE ip_address = $1
-			`, targetIP).Scan(&existingID, &existingName)
-		}
-		if (findErr != nil || existingID == 0) && report.Hostname != "" {
-			findErr = database.DB.QueryRow(`
-				SELECT id, name FROM devices WHERE LOWER(name) = LOWER($1)
-			`, report.Hostname).Scan(&existingID, &existingName)
-		}
-
-		if findErr == nil && existingID > 0 {
-			devID = existingID
-			devName = existingName
-			_ = database.DB.QueryRow(`
-				SELECT device_type, COALESCE(agent_upgrade_status, 'none'), COALESCE(agent_upgrade_target, '')
-				FROM devices WHERE id = $1
-			`, devID).Scan(&devType, &upgStatus, &upgTarget)
-
-			if token != "" {
-				_, _ = database.DB.Exec(`
-					UPDATE devices 
-					SET agent_token = $1, is_agent_installed = 1, status = 'online', last_seen_at = CURRENT_TIMESTAMP 
-					WHERE id = $2
-				`, token, devID)
-			} else {
-				_, _ = database.DB.Exec(`
-					UPDATE devices 
-					SET is_agent_installed = 1, status = 'online', last_seen_at = CURRENT_TIMESTAMP 
-					WHERE id = $1
-				`, devID)
-			}
-		} else {
-			name := report.Hostname
-			if name == "" {
-				name = "Agent-" + targetIP
-			}
-			dtype := "linux"
-			if strings.Contains(strings.ToLower(report.OSName), "windows") {
-				dtype = "windows"
-			}
-			res, insErr := database.DB.Exec(`
-				INSERT INTO devices (name, ip_address, device_type, os_version, is_agent_installed, agent_token, agent_version, machine_uuid, status, last_seen_at)
-				VALUES ($1, $2, $3, $4, 1, $5, $6, $7, 'online', CURRENT_TIMESTAMP)
-				ON CONFLICT (ip_address) DO UPDATE SET
-					agent_token = CASE WHEN EXCLUDED.agent_token != '' THEN EXCLUDED.agent_token ELSE devices.agent_token END,
-					is_agent_installed = 1,
-					status = 'online',
-					last_seen_at = CURRENT_TIMESTAMP
-			`, name, targetIP, dtype, report.OSName+" "+report.OSVersion, token, report.AgentVersion, report.MachineUUID)
-			if insErr != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ajan yetkilendirilemedi: " + insErr.Error()})
-				return
-			}
-			id64, _ := res.LastInsertId()
-			devID = int(id64)
-			devName = name
-			if devID <= 0 {
-				_ = database.DB.QueryRow("SELECT id FROM devices WHERE ip_address = $1", targetIP).Scan(&devID)
-			}
-		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz veya yetkilendirilmemiş ajan tokenı"})
+		return
 	}
 
 	// If agent is reporting graceful shutdown
@@ -1272,6 +1213,16 @@ func GenerateLinuxAgentScript(c *gin.Context) {
 	}
 	serverURL := fmt.Sprintf("%s://%s", scheme, host)
 
+	var enrollKey string
+	if database.DB != nil {
+		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&enrollKey)
+	}
+
+	enrollFlag := ""
+	if enrollKey != "" {
+		enrollFlag = fmt.Sprintf(" -enroll-key \"%s\"", enrollKey)
+	}
+
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 # ==============================================================================
 # GNNwatchtower Telemetry Agent Installer (Linux / Ubuntu / Debian)
@@ -1312,11 +1263,11 @@ chmod 755 "$BIN_TARGET.tmp"
 mv -f "$BIN_TARGET.tmp" "$BIN_TARGET"
 
 echo "[GNNwatchtower] Sistem servisi yapilandiriliyor ve baslatiliyor..."
-"$BIN_TARGET" -service install -server "$SERVER_URL"
+"$BIN_TARGET" -service install -server "$SERVER_URL"%s
 "$BIN_TARGET" -service start
 
 echo "[GNNwatchtower] Ajan basariyla kuruldu, otomatik olarak kaydoldu (Auto-Enrollment) ve aktif calisiyor!"
-`, serverURL)
+`, serverURL, enrollFlag)
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 	c.String(http.StatusOK, script)
@@ -1330,6 +1281,16 @@ func GenerateWindowsAgentScript(c *gin.Context) {
 		scheme = "https"
 	}
 	serverURL := fmt.Sprintf("%s://%s", scheme, host)
+
+	var enrollKey string
+	if database.DB != nil {
+		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&enrollKey)
+	}
+
+	enrollFlag := ""
+	if enrollKey != "" {
+		enrollFlag = fmt.Sprintf(" -enroll-key \"%s\"", enrollKey)
+	}
 
 	ps1 := fmt.Sprintf(`$ErrorActionPreference = "Stop"
 
@@ -1378,7 +1339,7 @@ Move-Item -Path $agentTmp -Destination $agentExe -Force
 
 Write-Host "[GNNwatchtower] Yerel Windows Hizmeti tescil ediliyor..."
 try {
-    & "$agentExe" -service install -server "$serverUrl"
+    & "$agentExe" -service install -server "$serverUrl"%s
 } catch {
     Write-Host "[BILGI] Servis zaten kurulu veya tescil edildi, baslatiliyor..." -ForegroundColor Yellow
 }
@@ -1393,7 +1354,7 @@ Write-Host "[GNNwatchtower] Windows Ajan basariyla kuruldu, otomatik olarak kayd
 Write-Host ""
 Write-Host "[BILGI] Hizmet durumunu izlemek ve ag/port erisimini test etmek icin:" -ForegroundColor Cyan
 Write-Host "        & '$agentExe' -diag" -ForegroundColor Yellow
-`, serverURL)
+`, serverURL, enrollFlag)
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 	c.String(http.StatusOK, ps1)

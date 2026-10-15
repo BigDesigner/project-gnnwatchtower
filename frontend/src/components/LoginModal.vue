@@ -72,8 +72,8 @@ const handleLogin = async () => {
   isSubmitting.value = true
   errorMessage.value = ''
   try {
-    await api.login(username.value, password.value)
-    emit('logged-in')
+    const res = await api.login(username.value, password.value)
+    emit('logged-in', res)
   } catch (err) {
     errorMessage.value = err.response?.data?.error || 'Giriş başarısız. Kullanıcı adı veya şifre hatalı.'
   } finally {

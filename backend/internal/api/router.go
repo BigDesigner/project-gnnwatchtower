@@ -11,6 +11,16 @@ import (
 	"gnnwatchtower/internal/version"
 )
 
+// MaxBodySizeMiddleware limits request body size to mitigate DoS/OOM attacks
+func MaxBodySizeMiddleware(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+		c.Next()
+	}
+}
+
 // SetupRouter configures all REST routes, middleware, and web UI handlers
 func SetupRouter(webFS fs.FS) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
@@ -20,11 +30,13 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 	// Relaxed CORS for dev and embedded production
 	corsConfig := cors.DefaultConfig()
 	corsConfig.AllowAllOrigins = true
-	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Agent-Token", "X-Enrollment-Key"}
 	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
 	r.Use(cors.New(corsConfig))
 
 	api := r.Group("/api")
+	// Global 2MB payload ceiling for general API routes
+	api.Use(MaxBodySizeMiddleware(2 * 1024 * 1024))
 	{
 		// Public Health, Auth & Agent Endpoints
 		api.GET("/health", func(c *gin.Context) {
@@ -35,9 +47,9 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 				"port":    3800,
 			})
 		})
-		api.POST("/auth/login", Login)
-		api.POST("/agent/enroll", AgentEnroll)
-		api.POST("/agent/report", AgentHeartbeat)
+		api.POST("/auth/login", MaxBodySizeMiddleware(64*1024), Login)
+		api.POST("/agent/enroll", MaxBodySizeMiddleware(256*1024), AgentEnroll)
+		api.POST("/agent/report", MaxBodySizeMiddleware(1024*1024), AgentHeartbeat)
 		api.GET("/agent/install/linux", GenerateLinuxAgentScript)
 		api.GET("/agent/install/windows", GenerateWindowsAgentScript)
 		api.GET("/agent/download/:platform", DownloadAgentBinary)
@@ -77,7 +89,7 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 
 			// Backup & Restore (JSON Bundle)
 			protected.GET("/backup/export", ExportBackup)
-			protected.POST("/backup/import", ImportBackup)
+			protected.POST("/backup/import", MaxBodySizeMiddleware(50*1024*1024), ImportBackup)
 
 			// Settings
 			protected.GET("/settings", GetSettings)

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -187,10 +188,55 @@ func (p *Poller) checkSingleDevice(dev models.Device) {
 	p.pollDeviceServices(dev.ID, dev.IPAddress)
 }
 
+func isDisallowedHostOrIP(hostStr string) bool {
+	h := strings.ToLower(strings.TrimSpace(hostStr))
+	if idx := strings.Index(h, "://"); idx != -1 {
+		h = h[idx+3:]
+	}
+	if slashIdx := strings.Index(h, "/"); slashIdx != -1 {
+		h = h[:slashIdx]
+	}
+	if colonIdx := strings.LastIndex(h, ":"); colonIdx != -1 && !strings.Contains(h[colonIdx:], "]") {
+		h = h[:colonIdx]
+	}
+	h = strings.Trim(h, "[]")
+
+	if h == "" || h == "metadata.google.internal" || h == "instance-data" || h == "169.254.169.254" {
+		return true
+	}
+
+	ips, err := net.LookupIP(h)
+	if err != nil {
+		ip := net.ParseIP(h)
+		if ip != nil {
+			ips = []net.IP{ip}
+		} else {
+			return false
+		}
+	}
+
+	for _, ip := range ips {
+		// Link-local unicast (169.254.0.0/16, fe80::/10) or multicast
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return true
+		}
+		// Explicitly block AWS/GCP/Azure/OpenStack metadata IP
+		if ip.Equal(net.ParseIP("169.254.169.254")) {
+			return true
+		}
+	}
+	return false
+}
+
 func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, float64, int, string) {
 	urlStr := targetURL
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		urlStr = "https://" + urlStr
+	}
+
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil || isDisallowedHostOrIP(parsedURL.Hostname()) {
+		return false, 0, 0, ""
 	}
 
 	client := &http.Client{
@@ -198,6 +244,9 @@ func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, fl
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
+			}
+			if isDisallowedHostOrIP(req.URL.Hostname()) {
+				return fmt.Errorf("SSRF protection: redirect to link-local or cloud metadata address blocked")
 			}
 			return nil
 		},
@@ -208,11 +257,14 @@ func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, fl
 	if err != nil {
 		// If https failed and URL was plain host, fallback to http
 		if !strings.HasPrefix(targetURL, "https://") && !strings.HasPrefix(targetURL, "http://") {
-			respHttp, errHttp := client.Get("http://" + targetURL)
-			if errHttp == nil {
-				defer respHttp.Body.Close()
-				latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-				return respHttp.StatusCode < 500, latencyMs, respHttp.StatusCode, "HTTP"
+			fallbackURL, errFallback := url.Parse("http://" + targetURL)
+			if errFallback == nil && !isDisallowedHostOrIP(fallbackURL.Hostname()) {
+				respHttp, errHttp := client.Get("http://" + targetURL)
+				if errHttp == nil {
+					defer respHttp.Body.Close()
+					latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+					return respHttp.StatusCode < 500, latencyMs, respHttp.StatusCode, "HTTP"
+				}
 			}
 		}
 		return false, 0, 0, ""
