@@ -23,12 +23,12 @@ func PingHost(ip string, timeout time.Duration) (bool, float64) {
 
 	// 1. Fast TCP probe on common management & network ports (53 DNS, 80 HTTP, 443 HTTPS, 22 SSH, 3389 RDP, 445 SMB, 8080 Web)
 	tcpPorts := []int{53, 80, 443, 22, 3389, 445, 8080}
-	start := time.Now()
 	for _, port := range tcpPorts {
+		portStart := time.Now()
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), 200*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
-			ms := float64(time.Since(start).Microseconds()) / 1000.0
+			ms := float64(time.Since(portStart).Microseconds()) / 1000.0
 			return true, ms
 		}
 	}
@@ -49,6 +49,7 @@ func PingHost(ip string, timeout time.Duration) (bool, float64) {
 		cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-W", strconv.Itoa(timeoutSec), ip)
 	}
 
+	pingStart := time.Now()
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		outStr := strings.ToLower(string(out))
@@ -59,7 +60,7 @@ func PingHost(ip string, timeout time.Duration) (bool, float64) {
 		   strings.Contains(outStr, "bytes from") {
 			rtt := parseRTT(outStr)
 			if rtt <= 0 {
-				rtt = float64(time.Since(start).Microseconds()) / 1000.0
+				rtt = float64(time.Since(pingStart).Microseconds()) / 1000.0
 			}
 			return true, rtt
 		}

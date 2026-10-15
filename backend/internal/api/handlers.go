@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"gnnwatchtower/internal/incident"
 	"gnnwatchtower/internal/models"
 	"gnnwatchtower/internal/monitor"
+	"gnnwatchtower/internal/version"
 )
 
 // GetDashboardStats returns high-level system summary
@@ -858,7 +860,7 @@ func AgentEnroll(c *gin.Context) {
 
 	agentVer := req.AgentVersion
 	if agentVer == "" {
-		agentVer = "0.4.1"
+		agentVer = version.Get()
 	}
 
 	// 1. Check if device already exists by machine_uuid or ip_address
@@ -922,7 +924,7 @@ func AgentEnroll(c *gin.Context) {
 		Token:                agentToken,
 		DeviceID:             devID,
 		CheckIntervalSeconds: 15,
-		ServerVersion:        "0.4.1",
+		ServerVersion:        version.Get(),
 	})
 }
 
@@ -1059,32 +1061,38 @@ func AgentHeartbeat(c *gin.Context) {
 		return
 	}
 
-	// Handle agent upgrade feedback
-	if report.UpgradeStatus != "" {
-		if report.UpgradeStatus == "success" {
-			_, _ = database.DB.Exec(`
-				UPDATE devices 
-				SET agent_upgrade_status = 'success',
-				    agent_upgrade_error = '',
-				    agent_last_upgrade_at = CURRENT_TIMESTAMP,
-				    agent_version = COALESCE(NULLIF($1, ''), agent_version)
-				WHERE id = $2
-			`, report.AgentVersion, devID)
-			incident.DispatchAlert(devName, report.LocalIP, "AJAN BAŞARIYLA GÜNCELLENDİ", fmt.Sprintf("Ajan başarıyla v%s sürümüne yükseltildi.", report.AgentVersion))
-		} else {
-			_, _ = database.DB.Exec(`
-				UPDATE devices 
-				SET agent_upgrade_status = $1,
-				    agent_upgrade_error = $2
-				WHERE id = $3
-			`, report.UpgradeStatus, report.UpgradeError, devID)
-		}
+	// Handle agent upgrade feedback or automatic detection upon restart
+	if report.UpgradeStatus == "success" || ((upgStatus == "pending" || upgStatus == "applying" || upgStatus == "downloading") && upgTarget != "" && report.AgentVersion != "" && report.AgentVersion == upgTarget) {
+		_, _ = database.DB.Exec(`
+			UPDATE devices 
+			SET agent_upgrade_status = 'success',
+			    agent_upgrade_error = '',
+			    agent_last_upgrade_at = CURRENT_TIMESTAMP,
+			    agent_version = COALESCE(NULLIF($1, ''), agent_version)
+			WHERE id = $2
+		`, report.AgentVersion, devID)
+		incident.DispatchAlert(devName, report.LocalIP, "AJAN BAŞARIYLA GÜNCELLENDİ", fmt.Sprintf("Ajan başarıyla v%s sürümüne yükseltildi.", report.AgentVersion))
+	} else if report.UpgradeStatus != "" {
+		_, _ = database.DB.Exec(`
+			UPDATE devices 
+			SET agent_upgrade_status = $1,
+			    agent_upgrade_error = $2
+			WHERE id = $3
+		`, report.UpgradeStatus, report.UpgradeError, devID)
 	}
+
+	// Auto-resolve any open downtime or planned_maintenance incidents for this device
+	_, _ = database.DB.Exec(`
+		UPDATE downtime_incidents 
+		SET resolved_at = CURRENT_TIMESTAMP, 
+		    duration_seconds = CAST((strftime('%s', 'now') - strftime('%s', started_at)) AS INTEGER)
+		WHERE device_id = $1 AND resolved_at IS NULL
+	`, devID)
 
 	// Normal heartbeat update
 	agentVer := report.AgentVersion
 	if agentVer == "" {
-		agentVer = "0.4.1"
+		agentVer = "0.4.2"
 	}
 	_, _ = database.DB.Exec(`
 		UPDATE devices 
@@ -1112,7 +1120,7 @@ func AgentHeartbeat(c *gin.Context) {
 
 		targetVer := upgTarget
 		if targetVer == "" {
-			targetVer = "0.4.1"
+			targetVer = version.Get()
 		}
 
 		checksum := getBinaryChecksum(platform)
@@ -1144,7 +1152,7 @@ func TriggerAgentUpgrade(c *gin.Context) {
 	var targetVersion string
 	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&targetVersion)
 	if targetVersion == "" {
-		targetVersion = "0.4.1"
+		targetVersion = version.Get()
 	}
 
 	res, err := database.DB.Exec(`
@@ -1181,7 +1189,7 @@ func TriggerAllAgentsUpgrade(c *gin.Context) {
 	var targetVersion string
 	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&targetVersion)
 	if targetVersion == "" {
-		targetVersion = "0.4.1"
+		targetVersion = version.Get()
 	}
 
 	res, err := database.DB.Exec(`
@@ -1211,7 +1219,7 @@ func GetAgentVersions(c *gin.Context) {
 		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&latestVersion)
 	}
 	if latestVersion == "" {
-		latestVersion = "0.4.1"
+		latestVersion = "0.4.2"
 	}
 
 	winHash := getBinaryChecksum("windows")
@@ -1234,11 +1242,17 @@ func getBinaryChecksum(platform string) string {
 		filename = "gnnwatchtower-agent"
 	}
 
-	paths := []string{
-		"/opt/gnnwatchtower/bin/" + filename,
-		"./bin/" + filename,
-		filename,
+	var paths []string
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		paths = append(paths, filepath.Join(exeDir, "bin", filename), filepath.Join(exeDir, filename))
 	}
+	paths = append(paths,
+		"/opt/gnnwatchtower/bin/"+filename,
+		"./bin/"+filename,
+		"../bin/"+filename,
+		filename,
+	)
 
 	for _, p := range paths {
 		if data, err := os.ReadFile(p); err == nil && len(data) > 10000 {
@@ -1395,11 +1409,17 @@ func DownloadAgentBinary(c *gin.Context) {
 		filename = "gnnwatchtower-agent"
 	}
 
-	paths := []string{
-		"/opt/gnnwatchtower/bin/" + filename,
-		"./bin/" + filename,
-		filename,
+	var paths []string
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		paths = append(paths, filepath.Join(exeDir, "bin", filename), filepath.Join(exeDir, filename))
 	}
+	paths = append(paths,
+		"/opt/gnnwatchtower/bin/"+filename,
+		"./bin/"+filename,
+		"../bin/"+filename,
+		filename,
+	)
 
 	var foundPath string
 	for _, p := range paths {

@@ -7,6 +7,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+
+	"gnnwatchtower/internal/version"
 )
 
 // SetupRouter configures all REST routes, middleware, and web UI handlers
@@ -29,7 +31,7 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "healthy",
 				"service": "gnnwatchtower",
-				"version": "0.4.1",
+				"version": version.Get(),
 				"port":    3800,
 			})
 		})

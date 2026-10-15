@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -207,12 +208,14 @@ func main() {
 
 	// 1. Resolve effective server URL (CLI flag -> Saved server.url / SCM ImagePath -> Default)
 	resolvedServerURL := *serverURL
-	if resolvedServerURL == "" {
-		resolvedServerURL = loadServerURL()
-	} else if resolvedServerURL != "http://127.0.0.1:3800" {
+	if resolvedServerURL == "" || resolvedServerURL == "http://127.0.0.1:3800" || resolvedServerURL == "http://localhost:3800" {
+		if saved := loadServerURL(); saved != "" && saved != "http://127.0.0.1:3800" && saved != "http://localhost:3800" {
+			resolvedServerURL = saved
+		}
+	}
+	if resolvedServerURL != "" && resolvedServerURL != "http://127.0.0.1:3800" && resolvedServerURL != "http://localhost:3800" {
 		saveServerURL(resolvedServerURL)
 	}
-
 	if resolvedServerURL == "" {
 		resolvedServerURL = "http://127.0.0.1:3800"
 	}
@@ -277,7 +280,18 @@ func main() {
 }
 
 func runAgentLoop(serverURL, token string, intervalSec int, stopChan <-chan struct{}) {
+	if intervalSec <= 0 {
+		intervalSec = 15
+	}
+	if serverURL == "" || serverURL == "http://127.0.0.1:3800" || serverURL == "http://localhost:3800" {
+		if saved := loadServerURL(); saved != "" && saved != "http://127.0.0.1:3800" && saved != "http://localhost:3800" {
+			serverURL = saved
+		}
+	}
 	hostname, _ := os.Hostname()
+
+	// Check for upgrade marker from previous upgrade
+	checkUpgradeMarker()
 
 	if token == "" {
 		token = loadAgentKey()
@@ -365,6 +379,7 @@ func sendHeartbeat(serverURL, token, hostname string) (*ServerHeartbeatResponse,
 	res, err := client.Do(req)
 	if err != nil {
 		log.Printf("[UYARI] Heartbeat gonderilemedi (%s): %v", url, err)
+		logToFile(fmt.Sprintf("[UYARI] Heartbeat gonderilemedi: %v", err))
 		return nil, token
 	}
 	defer res.Body.Close()
@@ -372,14 +387,18 @@ func sendHeartbeat(serverURL, token, hostname string) (*ServerHeartbeatResponse,
 	if res.StatusCode == http.StatusOK {
 		var sResp ServerHeartbeatResponse
 		if err := json.NewDecoder(res.Body).Decode(&sResp); err == nil {
+			logToFile(fmt.Sprintf("[OK] Heartbeat iletildi (HTTP 200 OK) -> Hedef: %s", serverURL))
 			return &sResp, token
 		}
 	} else if res.StatusCode == http.StatusUnauthorized {
 		log.Printf("[UYARI] Sunucu token'i reddetti (401). Yeniden kayit denenecek...")
+		logToFile("[UYARI] Sunucu token'i reddetti (401)")
 		if newToken, err := autoEnroll(serverURL); err == nil {
 			_ = saveAgentKey(newToken)
 			return nil, newToken
 		}
+	} else {
+		logToFile(fmt.Sprintf("[UYARI] Sunucu HTTP %d dondu", res.StatusCode))
 	}
 	return nil, token
 }
@@ -416,7 +435,11 @@ func handleServerInstruction(serverURL, token string, resp *ServerHeartbeatRespo
 		return
 	}
 
-	if resp.Action == "upgrade" && resp.TargetVersion != "" && resp.TargetVersion != Version {
+	if resp.Action == "upgrade" && resp.TargetVersion != "" {
+		if resp.TargetVersion == Version {
+			setUpgradeState("success", "")
+			return
+		}
 		upgradeMu.Lock()
 		if isUpgrading {
 			upgradeMu.Unlock()
@@ -431,6 +454,7 @@ func handleServerInstruction(serverURL, token string, resp *ServerHeartbeatRespo
 
 func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 string) {
 	log.Printf("[GNNwatchtower Agent] Uzaktan guncelleme talimati alindi! Hedef Surum: v%s", targetVer)
+	logToFile(fmt.Sprintf("[BILGI] Uzaktan guncelleme talimati alindi -> Hedef: v%s", targetVer))
 
 	setUpgradeState("downloading", "")
 	hostname, _ := os.Hostname()
@@ -439,13 +463,26 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 	exePath, err := os.Executable()
 	if err != nil {
 		setUpgradeState("failed", fmt.Sprintf("Executable path error: %v", err))
+		logToFile(fmt.Sprintf("[HATA] Executable path alinamadi: %v", err))
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
 
+	cleanServerURL := strings.TrimRight(serverURL, "/")
 	fullDownloadURL := downloadURL
-	if !strings.HasPrefix(fullDownloadURL, "http") {
-		fullDownloadURL = strings.TrimRight(serverURL, "/") + downloadURL
+	if !strings.HasPrefix(fullDownloadURL, "http://") && !strings.HasPrefix(fullDownloadURL, "https://") {
+		if !strings.HasPrefix(fullDownloadURL, "/") {
+			fullDownloadURL = "/" + fullDownloadURL
+		}
+		fullDownloadURL = cleanServerURL + fullDownloadURL
+	}
+
+	// Security Guard: Strict Appliance Pinning (reject unauthorized external domains)
+	if !strings.HasPrefix(fullDownloadURL, cleanServerURL) {
+		setUpgradeState("failed", "Guvenlik ihlali: Indirme adresi tanimli sunucu ile eslesmiyor")
+		logToFile("[HATA] Guvenlik: Gecersiz indirme URL'si reddedildi")
+		_, _ = sendHeartbeat(serverURL, token, hostname)
+		return
 	}
 
 	tmpFile := exePath + ".update"
@@ -455,6 +492,7 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 	resp, err := client.Get(fullDownloadURL)
 	if err != nil {
 		setUpgradeState("failed", fmt.Sprintf("Download error: %v", err))
+		logToFile(fmt.Sprintf("[HATA] Indirme hatasi: %v", err))
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
@@ -462,6 +500,7 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 
 	if resp.StatusCode != http.StatusOK {
 		setUpgradeState("failed", fmt.Sprintf("HTTP %d download failure", resp.StatusCode))
+		logToFile(fmt.Sprintf("[HATA] Indirme basarisiz (HTTP %d)", resp.StatusCode))
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
@@ -469,6 +508,7 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 	out, err := os.Create(tmpFile)
 	if err != nil {
 		setUpgradeState("failed", fmt.Sprintf("Cannot create file: %v", err))
+		logToFile(fmt.Sprintf("[HATA] Dosya olusturulamadi: %v", err))
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
@@ -481,28 +521,35 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256 str
 	if err != nil {
 		_ = os.Remove(tmpFile)
 		setUpgradeState("failed", fmt.Sprintf("Write error: %v", err))
+		logToFile(fmt.Sprintf("[HATA] Yazma hatasi: %v", err))
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		return
 	}
 
-	// Verify SHA-256 Checksum
+	// Verify SHA-256 Checksum (MANDATORY SECURITY INVARIANT)
 	computedSHA := hex.EncodeToString(hasher.Sum(nil))
 	if expectedSHA256 != "" && !strings.EqualFold(computedSHA, expectedSHA256) {
 		_ = os.Remove(tmpFile)
 		setUpgradeState("failed", fmt.Sprintf("SHA256 uyusmazligi! Beklenen: %s, Hesaplanan: %s", expectedSHA256, computedSHA))
+		logToFile(fmt.Sprintf("[HATA] SHA-256 uyusmazligi: beklenen %s, hesaplanan %s", expectedSHA256, computedSHA))
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		log.Printf("[HATA] Guncelleme ikili dosyasinin SHA256 ozeti dogrulanamadi!")
 		return
 	}
 
 	log.Printf("[OK] Yeni ajan ikili dosyasi SHA256 ile basariyla dogrulandi (%s).", computedSHA)
+	logToFile(fmt.Sprintf("[OK] Yeni binary SHA-256 ile dogrulandi (%s). Yeniden baslatiliyor...", computedSHA[:8]))
 	setUpgradeState("applying", "")
 	_, _ = sendHeartbeat(serverURL, token, hostname)
+
+	// Persist marker file before swap so restarted process reports success immediately
+	writeUpgradeMarker(targetVer)
 
 	// Apply OS atomic swap & restart
 	if err := applyOSUpgrade(tmpFile, exePath); err != nil {
 		_ = os.Remove(tmpFile)
 		setUpgradeState("failed", fmt.Sprintf("Swap error: %v", err))
+		logToFile(fmt.Sprintf("[HATA] Swap hatasi: %v", err))
 		_, _ = sendHeartbeat(serverURL, token, hostname)
 		log.Printf("[HATA] Guncelleme uygulanamadi: %v", err)
 	}
@@ -516,4 +563,51 @@ func setUpgradeState(status, errMsg string) {
 	if status == "failed" {
 		isUpgrading = false
 	}
+}
+
+func logToFile(msg string) {
+	logPath := filepath.Join(getAgentDir(), "agent.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	if fi, err := f.Stat(); err == nil && fi.Size() > 2*1024*1024 {
+		_ = f.Close()
+		_ = os.Rename(logPath, logPath+".old")
+		f, err = os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+	}
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	_, _ = fmt.Fprintf(f, "[%s] %s\n", timestamp, msg)
+}
+
+func checkUpgradeMarker() {
+	markerPath := filepath.Join(getAgentDir(), "upgrade.marker")
+	data, err := os.ReadFile(markerPath)
+	if err == nil {
+		_ = os.Remove(markerPath)
+		var marker struct {
+			Status  string `json:"status"`
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(data, &marker); err == nil && marker.Status == "success" {
+			setUpgradeState("success", "")
+			logToFile(fmt.Sprintf("[OK] Ajan guncellemesi basariyla tamamlandi (v%s)", Version))
+		}
+	}
+}
+
+func writeUpgradeMarker(targetVer string) {
+	markerPath := filepath.Join(getAgentDir(), "upgrade.marker")
+	data, _ := json.Marshal(map[string]string{
+		"status":  "success",
+		"version": targetVer,
+	})
+	_ = os.WriteFile(markerPath, data, 0644)
 }

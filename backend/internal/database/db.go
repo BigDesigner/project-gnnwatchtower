@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"gnnwatchtower/internal/version"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -88,7 +90,7 @@ func migrateSchema(db *sql.DB) error {
 		operator_notes TEXT,
 		is_agent_installed INTEGER DEFAULT 0,
 		agent_token TEXT UNIQUE,
-		agent_version TEXT DEFAULT '0.4.1',
+		agent_version TEXT DEFAULT '0.4.2',
 		agent_upgrade_status TEXT DEFAULT 'none',
 		agent_upgrade_target TEXT DEFAULT '',
 		agent_upgrade_error TEXT DEFAULT '',
@@ -178,7 +180,7 @@ func migrateSchema(db *sql.DB) error {
 	('brevo_sender_name', 'GNNwatchtower Altyapı Bildirimi', 'Brevo gönderici adı'),
 	('brevo_recipient_email', '', 'Bildirimlerin gönderileceği e-posta adresi'),
 	('brevo_enabled', 'false', 'E-posta bildirimleri aktif mi'),
-	('agent_latest_version', '0.4.1', 'En son derlenmiş resmi GNNwatchtower ajan sürümü'),
+	('agent_latest_version', '0.4.2', 'En son derlenmiş resmi GNNwatchtower ajan sürümü'),
 	('agent_sha256_windows', '', 'Windows ajan ikili dosyasının resmi SHA256 özeti'),
 	('agent_sha256_linux', '', 'Linux ajan ikili dosyasının resmi SHA256 özeti');
 	`
@@ -192,7 +194,7 @@ func migrateSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE system_metrics ADD COLUMN net_tx_kbps REAL DEFAULT 0")
 
 	// Idempotent column migrations for devices
-	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_version TEXT DEFAULT '0.4.1'")
+	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_version TEXT DEFAULT '0.4.2'")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_status TEXT DEFAULT 'none'")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_target TEXT DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_error TEXT DEFAULT ''")
@@ -200,7 +202,7 @@ func migrateSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN machine_uuid TEXT DEFAULT ''")
 
 	// Automatically upgrade agent_latest_version to current release
-	_, _ = db.Exec("UPDATE system_settings SET value = '0.4.1' WHERE key = 'agent_latest_version'")
+	_, _ = db.Exec("UPDATE system_settings SET value = $1 WHERE key = 'agent_latest_version'", version.Get())
 
 	// Create default admin user if no users exist (admin / admin)
 	var count int

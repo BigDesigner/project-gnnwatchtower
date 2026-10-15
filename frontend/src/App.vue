@@ -714,6 +714,7 @@ import ClassifyModal from './components/ClassifyModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ChangePasswordModal from './components/ChangePasswordModal.vue'
 import LoginModal from './components/LoginModal.vue'
+import { APP_VERSION } from './version'
 
 // State
 const stats = ref({})
@@ -808,6 +809,20 @@ const fetchData = async () => {
     // If no device selected yet and we have devices, auto-select the first one
     if (!selectedDevice.value && devices.value.length > 0) {
       selectDevice(devices.value[0])
+    } else if (selectedDevice.value) {
+      // Keep selectedDevice in sync with live fresh device data
+      const freshDevice = devices.value.find(d => d.id === selectedDevice.value.id)
+      if (freshDevice) {
+        selectedDevice.value = freshDevice
+      }
+      // Silently refresh metrics for selectedDevice
+      api.getDeviceTelemetry(selectedDevice.value.id).then(res => {
+        if (selectedDevice.value && selectedDevice.value.id === res.device?.id) {
+          selectedMetrics.value = res.metrics || []
+        } else if (res.metrics) {
+          selectedMetrics.value = res.metrics
+        }
+      }).catch(() => {})
     }
   } catch (err) {
     // Auth failures are caught by Axios interceptor
@@ -877,7 +892,7 @@ const deleteDevice = async (id) => {
 
 const handleUpgradeAgent = async (device) => {
   if (!device || !device.id) return
-  if (!confirm(`'${device.name}' üzerindeki GNNwatchtower ajanına uzaktan v0.4.1 güncelleme talimatı göndermek istiyor musunuz?`)) return
+  if (!confirm(`'${device.name}' üzerindeki GNNwatchtower ajanına uzaktan v${APP_VERSION} güncelleme talimatı göndermek istiyor musunuz?`)) return
   try {
     const res = await api.upgradeAgent(device.id)
     device.agent_upgrade_status = 'pending'

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +62,15 @@ func (m *windowsAgentService) Execute(args []string, r <-chan svc.ChangeRequest,
 
 	initEventLog()
 	logEvent(eventlog.Info, fmt.Sprintf("[GNNwatchtower Agent] Service starting (v%s)...", Version))
+
+	if m.serverURL == "" || m.serverURL == "http://127.0.0.1:3800" || m.serverURL == "http://localhost:3800" {
+		if saved := loadServerURL(); saved != "" && saved != "http://127.0.0.1:3800" && saved != "http://localhost:3800" {
+			m.serverURL = saved
+		}
+	}
+	if m.interval <= 0 {
+		m.interval = 15
+	}
 
 	stopChan := make(chan struct{})
 	go runAgentLoop(m.serverURL, m.token, m.interval, stopChan)
@@ -270,9 +280,18 @@ func stopWindowsService() error {
 	defer s.Close()
 
 	_, err = s.Control(svc.Stop)
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "has not been started") {
 		return fmt.Errorf("servis durdurulamadi: %w", err)
 	}
+
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		st, qErr := s.Query()
+		if qErr == nil && st.State == svc.Stopped {
+			break
+		}
+	}
+
 	log.Printf("[OK] Windows Hizmeti '%s' durduruldu.", serviceName)
 	return nil
 }
@@ -372,25 +391,97 @@ func saveServerURL(serverURL string) {
 	if serverURL == "" {
 		return
 	}
+	u, err := url.Parse(strings.TrimSpace(serverURL))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return
+	}
+	cleanURL := u.Scheme + "://" + u.Host
+
 	p := filepath.Join(getAgentDir(), "server.url")
-	_ = os.WriteFile(p, []byte(strings.TrimSpace(serverURL)), 0644)
+	_ = os.WriteFile(p, []byte(cleanURL), 0644)
+
+	syncServiceRegistryURL(cleanURL)
+}
+
+func syncServiceRegistryURL(targetURL string) {
+	if targetURL == "" || targetURL == "http://127.0.0.1:3800" || targetURL == "http://localhost:3800" {
+		return
+	}
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+serviceName, registry.SET_VALUE|registry.QUERY_VALUE)
+	if err == nil {
+		defer k.Close()
+		exePath, _ := os.Executable()
+		if exePath == "" {
+			exePath = filepath.Join(os.Getenv("ProgramFiles"), "GNNwatchtower-Agent", "gnnwatchtower-agent.exe")
+		}
+		newImagePath := fmt.Sprintf(`"%s" -server %s`, exePath, targetURL)
+		_ = k.SetStringValue("ImagePath", newImagePath)
+	}
 }
 
 func loadServerURL() string {
+	// 1. Check getAgentDir()/server.url
 	p := filepath.Join(getAgentDir(), "server.url")
-	data, err := os.ReadFile(p)
-	if err == nil {
+	if data, err := os.ReadFile(p); err == nil {
 		u := strings.TrimSpace(string(data))
-		if u != "" && u != "http://127.0.0.1:3800" {
+		if u != "" && u != "http://127.0.0.1:3800" && u != "http://localhost:3800" {
 			return u
 		}
 	}
-	// Fallback: check Windows Service ImagePath in Registry
+	// 2. Check exe directory/server.url
+	if exe, err := os.Executable(); err == nil {
+		p2 := filepath.Join(filepath.Dir(exe), "server.url")
+		if data, err := os.ReadFile(p2); err == nil {
+			u := strings.TrimSpace(string(data))
+			if u != "" && u != "http://127.0.0.1:3800" && u != "http://localhost:3800" {
+				return u
+			}
+		}
+	}
+	// 3. Fallback: check Windows Service ImagePath in Registry
 	if regURL := loadServerURLFromRegistry(); regURL != "" {
 		saveServerURL(regURL)
 		return regURL
 	}
 	return ""
+}
+
+func updateServiceWithCurrentBinary() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	targetExe := filepath.Join(getAgentDir(), "gnnwatchtower-agent.exe")
+	if strings.EqualFold(exePath, targetExe) {
+		return fmt.Errorf("zaten kurulu olan servis dosyasi (%s) calistiriliyor", targetExe)
+	}
+
+	log.Printf("[*] Servis durduruluyor...")
+	_ = stopWindowsService()
+	time.Sleep(1 * time.Second)
+
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		return fmt.Errorf("calisan dosya okunamadi: %w", err)
+	}
+
+	oldFile := targetExe + ".old"
+	_ = os.Remove(oldFile)
+	_ = os.Rename(targetExe, oldFile)
+
+	if err := os.WriteFile(targetExe, data, 0755); err != nil {
+		_ = os.Rename(oldFile, targetExe)
+		return fmt.Errorf("yeni binary yazilamadi: %w", err)
+	}
+
+	// Update Registry ImagePath
+	savedURL := loadServerURL()
+	if savedURL != "" {
+		syncServiceRegistryURL(savedURL)
+	}
+
+	log.Printf("[*] Servis yeni ikili dosya ile baslatiliyor...")
+	return startWindowsService()
 }
 
 func loadServerURLFromRegistry() string {

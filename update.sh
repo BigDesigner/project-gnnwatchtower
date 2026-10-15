@@ -68,16 +68,19 @@ fi
 BUILD_DIR=$(mktemp -d -t gnnwatchtower-update-XXXXXX)
 git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$BUILD_DIR"
 
-TEMP_BIN="$BUILD_DIR/gnnwatchtower"
-(cd "$BUILD_DIR/backend" && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$TEMP_BIN" ./cmd/server)
+APP_VERSION=$(cat "$BUILD_DIR/VERSION" 2>/dev/null || cat VERSION 2>/dev/null || echo "0.4.2")
+cp "$BUILD_DIR/VERSION" "$INSTALL_DIR/VERSION" 2>/dev/null || true
 
-# Ajan ikili dosyalarini da guncelle (v0.4.1)
+TEMP_BIN="$BUILD_DIR/gnnwatchtower"
+(cd "$BUILD_DIR/backend" && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w -X 'gnnwatchtower/internal/version.Version=${APP_VERSION}'" -o "$TEMP_BIN" ./cmd/server)
+
+# Ajan ikili dosyalarini da guncelle (v${APP_VERSION})
 mkdir -p "$INSTALL_DIR/bin"
 if command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then
     (cd "$BUILD_DIR/backend/cmd/agent" && x86_64-w64-mingw32-windres versioninfo.rc -O coff -o rsrc_windows_amd64.syso 2>/dev/null || true)
 fi
-(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X 'main.Version=0.4.1'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent" ./cmd/agent)
-(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X 'main.Version=0.4.1'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent.exe" ./cmd/agent)
+(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X 'gnnwatchtower/internal/version.Version=${APP_VERSION}' -X 'main.Version=${APP_VERSION}'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent" ./cmd/agent)
+(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X 'gnnwatchtower/internal/version.Version=${APP_VERSION}' -X 'main.Version=${APP_VERSION}'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent.exe" ./cmd/agent)
 chmod +x "$INSTALL_DIR/bin/gnnwatchtower-agent"
 
 # Binary'yi guvenle yerlestir
@@ -94,7 +97,7 @@ if systemctl is-active --quiet gnnwatchtower; then
     SERVER_IP=$(hostname -I | awk '{print $1}' || echo "SUNUCU_IP")
     echo ""
     echo -e "${GREEN}=================================================================${NC}"
-    echo -e "${GREEN}  ✓ GNNwatchtower Basariyla Guncellendi! (v0.4.1)               ${NC}"
+    echo -e "${GREEN}  ✓ GNNwatchtower Basariyla Guncellendi! (v${APP_VERSION})      ${NC}"
     echo -e "${GREEN}  ✓ Tum ayarlar, cihazlar ve veritabani korundu.                ${NC}"
     echo -e "${GREEN}=================================================================${NC}"
     echo -e "Yonetim Paneli: ${CYAN}http://${SERVER_IP}:3800${NC}"

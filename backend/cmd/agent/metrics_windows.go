@@ -58,6 +58,20 @@ func getSystemMetrics() (cpuPct float64, ramPct float64, diskPct float64, netRx 
 	}
 
 	// 2. Real Windows CPU via GetSystemTimes
+	if prevKernelTime == 0 {
+		var it, kt, ut filetime
+		if ret, _, _ := procGetSystemTimes.Call(
+			uintptr(unsafe.Pointer(&it)),
+			uintptr(unsafe.Pointer(&kt)),
+			uintptr(unsafe.Pointer(&ut)),
+		); ret != 0 {
+			prevIdleTime = filetimeToUint64(it)
+			prevKernelTime = filetimeToUint64(kt)
+			prevUserTime = filetimeToUint64(ut)
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
 	var idleTime, kernelTime, userTime filetime
 	ret, _, _ = procGetSystemTimes.Call(
 		uintptr(unsafe.Pointer(&idleTime)),

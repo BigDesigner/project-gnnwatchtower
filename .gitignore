@@ -27,7 +27,8 @@ exports/
 *.bak
 
 # Derleme Çıktıları ve İkili Dosyalar (Binaries)
-/bin/
+bin/
+backend/cmd/server/bin/
 *.exe
 *.exe~
 *.dll

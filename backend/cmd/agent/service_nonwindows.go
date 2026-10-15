@@ -5,10 +5,12 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 func runAsWindowsService(serverURL, token string, interval int) error {
@@ -182,20 +184,121 @@ func saveServerURL(serverURL string) {
 	if serverURL == "" {
 		return
 	}
+	u, err := url.Parse(strings.TrimSpace(serverURL))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return
+	}
+	cleanURL := u.Scheme + "://" + u.Host
+
 	p := filepath.Join(getAgentDir(), "server.url")
-	_ = os.WriteFile(p, []byte(strings.TrimSpace(serverURL)), 0644)
+	_ = os.WriteFile(p, []byte(cleanURL), 0644)
+
+	syncServiceSystemdURL(cleanURL)
+}
+
+func syncServiceSystemdURL(targetURL string) {
+	if targetURL == "" || targetURL == "http://127.0.0.1:3800" || targetURL == "http://localhost:3800" {
+		return
+	}
+	servicePath := "/etc/systemd/system/gnnwatchtower-agent.service"
+	content, err := os.ReadFile(servicePath)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(content), "\n")
+	modified := false
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "ExecStart=") {
+			parts := strings.Fields(line)
+			serverIdx := -1
+			for idx, part := range parts {
+				if part == "-server" {
+					serverIdx = idx
+					break
+				}
+			}
+			if serverIdx != -1 && serverIdx+1 < len(parts) {
+				parts[serverIdx+1] = targetURL
+				lines[i] = strings.Join(parts, " ")
+				modified = true
+			}
+		}
+	}
+	if modified {
+		_ = os.WriteFile(servicePath, []byte(strings.Join(lines, "\n")), 0644)
+		_ = exec.Command("systemctl", "daemon-reload").Run()
+	}
 }
 
 func loadServerURL() string {
+	// 1. Check getAgentDir()/server.url
 	p := filepath.Join(getAgentDir(), "server.url")
-	data, err := os.ReadFile(p)
-	if err == nil {
+	if data, err := os.ReadFile(p); err == nil {
 		u := strings.TrimSpace(string(data))
-		if u != "" {
+		if u != "" && u != "http://127.0.0.1:3800" && u != "http://localhost:3800" {
 			return u
 		}
 	}
+	// 2. Check exe directory/server.url
+	if exe, err := os.Executable(); err == nil {
+		p2 := filepath.Join(filepath.Dir(exe), "server.url")
+		if data, err := os.ReadFile(p2); err == nil {
+			u := strings.TrimSpace(string(data))
+			if u != "" && u != "http://127.0.0.1:3800" && u != "http://localhost:3800" {
+				return u
+			}
+		}
+	}
+	// 3. Check systemd service file
+	servicePath := "/etc/systemd/system/gnnwatchtower-agent.service"
+	if data, err := os.ReadFile(servicePath); err == nil {
+		parts := strings.Fields(string(data))
+		for i, p := range parts {
+			if p == "-server" && i+1 < len(parts) {
+				u := strings.Trim(parts[i+1], `"' `)
+				if strings.HasPrefix(u, "http") {
+					return u
+				}
+			}
+		}
+	}
 	return ""
+}
+
+func updateServiceWithCurrentBinary() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	targetExe := filepath.Join(getAgentDir(), "gnnwatchtower-agent")
+	if exePath == targetExe {
+		return fmt.Errorf("zaten kurulu olan servis dosyasi (%s) calistiriliyor", targetExe)
+	}
+
+	log.Printf("[*] Servis durduruluyor...")
+	_ = stopOSService()
+
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		return fmt.Errorf("calisan dosya okunamadi: %w", err)
+	}
+
+	oldFile := targetExe + ".old"
+	_ = os.Remove(oldFile)
+	_ = os.Rename(targetExe, oldFile)
+
+	if err := os.WriteFile(targetExe, data, 0755); err != nil {
+		_ = os.Rename(oldFile, targetExe)
+		return fmt.Errorf("yeni binary yazilamadi: %w", err)
+	}
+
+	savedURL := loadServerURL()
+	if savedURL != "" {
+		syncServiceSystemdURL(savedURL)
+	}
+
+	log.Printf("[*] Servis yeni ikili dosya ile baslatiliyor...")
+	return startOSService()
 }
 
 func getOSServiceStatus() (string, bool) {
@@ -238,9 +341,11 @@ func applyOSUpgrade(updateFile, currentExe string) error {
 		return fmt.Errorf("binary swap error: %w", err)
 	}
 
-	// Trigger restart via systemd
-	_ = exec.Command("systemctl", "restart", "gnnwatchtower-agent.service").Start()
-	log.Println("[GNNwatchtower Agent] Upgrade applied. Restarting systemd service now.")
+	// Trigger restart via detached child process so systemd doesn't terminate restart when parent exits
+	cmd := exec.Command("/bin/sh", "-c", "sleep 1 && systemctl restart gnnwatchtower-agent.service")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	_ = cmd.Start()
+	log.Println("[GNNwatchtower Agent] Upgrade applied. Restarting systemd service detached.")
 	os.Exit(0)
 	return nil
 }

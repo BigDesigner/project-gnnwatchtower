@@ -23,7 +23,7 @@
         <template v-if="device && device.is_agent_installed">
           <span class="flex items-center gap-1.5 text-emerald-400">
             <span class="material-symbols-outlined text-[15px]">verified_user</span>
-            <span>Ajan v{{ device.agent_version || '0.4.1' }}</span>
+            <span>Ajan v{{ device.agent_version || APP_VERSION }}</span>
           </span>
 
           <!-- Upgrade Status Badges -->
@@ -50,7 +50,7 @@
             @click="triggerUpgrade(device.id)"
             :disabled="isUpgrading"
             class="px-2 py-0.5 rounded bg-blue-600/80 hover:bg-blue-600 text-white text-[11px] flex items-center gap-1 transition-colors shadow-sm disabled:opacity-50"
-            title="Ajanı uzaktan v0.4.1 sürümüne güncelle"
+            :title="'Ajanı uzaktan v' + APP_VERSION + ' sürümüne güncelle'"
           >
             <span class="material-symbols-outlined text-[13px]">system_update_alt</span>
             <span>{{ isUpgrading ? 'İletiliyor...' : 'Ajanı Güncelle' }}</span>
@@ -196,6 +196,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import api from '../services/api'
+import { APP_VERSION } from '../version'
 
 const props = defineProps({
   device: {

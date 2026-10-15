@@ -1,4 +1,7 @@
 package main
 
-// Version of the GNNwatchtower Telemetry Agent
-var Version = "0.4.1"
+import "gnnwatchtower/internal/version"
+
+// Version of the GNNwatchtower Telemetry Agent - dynamically linked to root VERSION
+var Version = version.Get()
+

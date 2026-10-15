@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -60,9 +61,12 @@ func runDiagnostics(serverURL, token string) {
 		fmt.Println(" [2] Servisi Baslat (Start Service)")
 		fmt.Println(" [3] Servisi Durdur (Stop Service)")
 		fmt.Println(" [4] Servisi Yeniden Baslat (Restart Service)")
+		fmt.Println(" [5] Bu Exe'yi Servise Uygula / Guncelle (Update Service Binary)")
+		fmt.Println(" [6] Hedef Sunucu Adresini Degistir (Change Appliance URL)")
+		fmt.Println(" [7] Canli Servis Loglarini Goruntule (View Service Logs)")
 		fmt.Println(" [0] Cikis (Exit)")
 		fmt.Println("----------------------------------------------------------------------")
-		fmt.Print(" Seciminiz [0-4]: ")
+		fmt.Print(" Seciminiz [0-7]: ")
 
 		scanner := bufio.NewScanner(os.Stdin)
 		if !scanner.Scan() {
@@ -97,6 +101,39 @@ func runDiagnostics(serverURL, token string) {
 				fmt.Println("[OK] Servis basariyla yeniden baslatildi.")
 			}
 			time.Sleep(1 * time.Second)
+		case "5":
+			fmt.Println("\n[*] Calisan bu exe, sistem servisi olarak tescil ediliyor / guncelleniyor...")
+			if err := updateServiceWithCurrentBinary(); err != nil {
+				fmt.Printf("[HATA] Servis guncellenemedi: %v\n", err)
+			} else {
+				fmt.Println("[OK] Servis dosyasi guncellendi ve servis basariyla yeniden baslatildi.")
+			}
+			time.Sleep(2 * time.Second)
+		case "6":
+			fmt.Printf("\n[i] Mevcut Sunucu Adresi: %s\n", targetURL)
+			fmt.Print("    Yeni Sunucu Adresini Giriniz (Orn: http://10.38.1.13:3800): ")
+			if scanner.Scan() {
+				val := strings.TrimSpace(scanner.Text())
+				if val != "" {
+					if !strings.HasPrefix(val, "http://") && !strings.HasPrefix(val, "https://") {
+						val = "http://" + val
+					}
+					u, err := url.Parse(val)
+					if err == nil && u.Host != "" {
+						cleanVal := u.Scheme + "://" + u.Host
+						targetURL = cleanVal
+						saveServerURL(targetURL)
+						fmt.Printf("[OK] Yeni sunucu adresi kaydedildi ve servise yansitildi: %s\n", targetURL)
+					} else {
+						fmt.Println("[HATA] Gecersiz URL bicimi.")
+					}
+				}
+			}
+			time.Sleep(1 * time.Second)
+		case "7":
+			printRecentLogs()
+			fmt.Print("\nDevam etmek icin Enter'a basiniz...")
+			scanner.Scan()
 		case "0", "q", "exit":
 			return
 		default:
@@ -210,4 +247,44 @@ func printDiagnosticReport(serverURL, token string) {
 			fmt.Println("TAMAMLANDI")
 		}
 	}
+}
+
+func printRecentLogs() {
+	logPaths := []string{
+		filepath.Join(getAgentDir(), "agent.log"),
+		"agent.log",
+	}
+	if exe, err := os.Executable(); err == nil {
+		logPaths = append(logPaths, filepath.Join(filepath.Dir(exe), "agent.log"))
+	}
+
+	var foundPath string
+	var data []byte
+	for _, lp := range logPaths {
+		if d, e := os.ReadFile(lp); e == nil && len(d) > 0 {
+			foundPath = lp
+			data = d
+			break
+		}
+	}
+
+	fmt.Println("\n======================================================================")
+	if foundPath == "" {
+		fmt.Println(" [!] Henuz olusturulmus 'agent.log' kaydi bulunamadi.")
+		fmt.Println("     Servis calisirken loglar otomatik olarak bu dosyaya yazilir.")
+		fmt.Println("======================================================================")
+		return
+	}
+
+	fmt.Printf(" [i] Son Ajan Loglari (%s):\n", foundPath)
+	fmt.Println("----------------------------------------------------------------------")
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	start := 0
+	if len(lines) > 20 {
+		start = len(lines) - 20
+	}
+	for _, l := range lines[start:] {
+		fmt.Println("  " + l)
+	}
+	fmt.Println("======================================================================")
 }

@@ -237,7 +237,7 @@
                           :class="getAgentBadgeClass(device)"
                           :title="getAgentBadgeTitle(device)"
                         >
-                          v{{ device.agent_version || '0.4.1' }}
+                          v{{ device.agent_version || APP_VERSION }}
                         </span>
                       </div>
                       <span v-if="device.purpose" class="text-[11px] text-txt-muted truncate max-w-[180px]">
@@ -340,7 +340,7 @@
                     <button 
                       v-if="device.is_agent_installed"
                       @click="$emit('upgrade-agent', device)" 
-                      title="Ajanı Uzaktan Güncelle (v0.4.1)"
+                      :title="'Ajanı Uzaktan Güncelle (v' + APP_VERSION + ')'"
                       class="p-1 rounded hover:bg-[#232936] text-txt-muted hover:text-emerald-400 transition-colors"
                     >
                       <span class="material-symbols-outlined text-[16px]">system_update_alt</span>
@@ -397,6 +397,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { APP_VERSION } from '../version'
 
 const props = defineProps({
   devices: {
@@ -576,7 +577,7 @@ const getAgentBadgeTitle = (device) => {
   if (device.agent_upgrade_status === 'downloading') return 'Yeni ikili dosya indiriliyor...'
   if (device.agent_upgrade_status === 'applying') return 'Ajan servisi yeniden başlatılıyor...'
   if (device.agent_upgrade_status === 'failed') return `Güncelleme hatası: ${device.agent_upgrade_error || 'Bilinmiyor'}`
-  return `Kurumsal Ajan Aktif (v${device.agent_version || '0.4.1'})`
+  return `Kurumsal Ajan Aktif (v${device.agent_version || APP_VERSION})`
 }
 
 const formatLastSeen = (timestamp) => {
