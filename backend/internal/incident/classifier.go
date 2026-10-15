@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gnnwatchtower/internal/database"
+	"gnnwatchtower/internal/version"
 )
 
 // EvaluateSimultaneousOutages checks if multiple devices failed in the same minute
@@ -118,8 +119,8 @@ func FormatTelegramAlert(company, location, device, ip, alertType, detail, times
 </pre>
 📋 <b>Detay:</b> %s
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🛡️ <i>GNNwatchtower Appliance</i>`,
-		escapedComp, locStr, escapedType, escapedTable, escapedDetail,
+🛡️ <i>GNNwatchtower Appliance v%s</i>`,
+		escapedComp, locStr, escapedType, escapedTable, escapedDetail, version.Get(),
 	)
 }
 
@@ -143,7 +144,7 @@ func FormatDiscordAlert(company, location, device, ip, alertType, detail, timest
 	}
 
 	payload := map[string]interface{}{
-		"content": fmt.Sprintf("🚨 **[GNNwatchtower] %s Bildirimi** — **%s**", alertType, company),
+		"content": fmt.Sprintf("🚨 **[GNNwatchtower v%s] %s Bildirimi** — **%s**", version.Get(), alertType, company),
 		"embeds": []map[string]interface{}{
 			{
 				"title": fmt.Sprintf("[%s] %s (%s)", alertType, device, ip),
@@ -158,7 +159,7 @@ func FormatDiscordAlert(company, location, device, ip, alertType, detail, timest
 					{"name": "⏰ Zaman", "value": timestamp, "inline": true},
 				},
 				"footer": map[string]string{
-					"text": fmt.Sprintf("GNNwatchtower Appliance • %s", company),
+					"text": fmt.Sprintf("GNNwatchtower Appliance v%s • %s", version.Get(), company),
 				},
 			},
 		},
@@ -309,9 +310,9 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 				<p style="margin: 6px 0; font-size: 14px;"><strong>Zaman:</strong> %s</p>
 				<p style="margin: 6px 0; font-size: 14px;"><strong>Detay:</strong> %s</p>
 			</div>
-			<p style="color: #94a3b8; font-size: 12px; margin: 0;">Bu e-posta GNNwatchtower tarafından otomatik olarak oluşturulmuştur.</p>
+			<p style="color: #94a3b8; font-size: 12px; margin: 0;">Bu e-posta GNNwatchtower v%s tarafından otomatik olarak oluşturulmuştur.</p>
 		</div>
-	`, escComp, escLoc, escType, escDev, escIP, escTime, escDetail)
+	`, escComp, escLoc, escType, escDev, escIP, escTime, escDetail, version.Get())
 
 	payload := map[string]interface{}{
 		"sender": map[string]string{
