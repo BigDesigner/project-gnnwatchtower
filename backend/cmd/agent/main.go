@@ -523,6 +523,11 @@ func sendHeartbeat(serverURL, token, hostname string) (*ServerHeartbeatResponse,
 		var sResp ServerHeartbeatResponse
 		if err := json.NewDecoder(res.Body).Decode(&sResp); err == nil {
 			logToFile(fmt.Sprintf("[OK] Heartbeat iletildi (HTTP 200 OK) -> Hedef: %s", serverURL))
+			upgradeMu.Lock()
+			if lastUpgradeStat == "success" {
+				lastUpgradeStat = ""
+			}
+			upgradeMu.Unlock()
 			return &sResp, token
 		}
 	} else if res.StatusCode == http.StatusUnauthorized {

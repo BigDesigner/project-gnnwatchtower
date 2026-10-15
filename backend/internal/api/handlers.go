@@ -1080,22 +1080,37 @@ func AgentHeartbeat(c *gin.Context) {
 
 	// Handle agent upgrade feedback or automatic detection upon restart
 	if report.UpgradeStatus == "success" || ((upgStatus == "pending" || upgStatus == "applying" || upgStatus == "downloading") && upgTarget != "" && report.AgentVersion != "" && report.AgentVersion == upgTarget) {
-		_, _ = database.DB.Exec(`
-			UPDATE devices 
-			SET agent_upgrade_status = 'success',
-			    agent_upgrade_error = '',
-			    agent_last_upgrade_at = CURRENT_TIMESTAMP,
-			    agent_version = COALESCE(NULLIF($1, ''), agent_version)
-			WHERE id = $2
-		`, report.AgentVersion, devID)
-		incident.DispatchAlert(devName, report.LocalIP, "AJAN BAŞARIYLA GÜNCELLENDİ", fmt.Sprintf("Ajan başarıyla v%s sürümüne yükseltildi.", report.AgentVersion))
-	} else if report.UpgradeStatus != "" {
-		_, _ = database.DB.Exec(`
-			UPDATE devices 
-			SET agent_upgrade_status = $1,
-			    agent_upgrade_error = $2
-			WHERE id = $3
-		`, report.UpgradeStatus, report.UpgradeError, devID)
+		if upgStatus != "success" && upgStatus != "none" {
+			_, _ = database.DB.Exec(`
+				UPDATE devices 
+				SET agent_upgrade_status = 'success',
+				    agent_upgrade_target = '',
+				    agent_upgrade_error = '',
+				    agent_last_upgrade_at = CURRENT_TIMESTAMP,
+				    agent_version = COALESCE(NULLIF($1, ''), agent_version)
+				WHERE id = $2
+			`, report.AgentVersion, devID)
+			incident.DispatchAlert(devName, report.LocalIP, "AJAN BAŞARIYLA GÜNCELLENDİ", fmt.Sprintf("Ajan başarıyla v%s sürümüne yükseltildi.", report.AgentVersion))
+		} else {
+			// Already notified; prevent notification spam loop and clear target
+			_, _ = database.DB.Exec(`
+				UPDATE devices 
+				SET agent_upgrade_status = 'none',
+				    agent_upgrade_target = '',
+				    agent_upgrade_error = '',
+				    agent_version = COALESCE(NULLIF($1, ''), agent_version)
+				WHERE id = $2
+			`, report.AgentVersion, devID)
+		}
+	} else if report.UpgradeStatus != "" && report.UpgradeStatus != "none" {
+		if report.UpgradeStatus != upgStatus {
+			_, _ = database.DB.Exec(`
+				UPDATE devices 
+				SET agent_upgrade_status = $1,
+				    agent_upgrade_error = $2
+				WHERE id = $3
+			`, report.UpgradeStatus, report.UpgradeError, devID)
+		}
 	}
 
 	// Auto-resolve any open downtime or planned_maintenance incidents for this device
