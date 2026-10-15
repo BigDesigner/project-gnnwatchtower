@@ -6,11 +6,11 @@
   "preferred_language": "tr",
   "timestamp": "2026-10-11T03:17:20+03:00",
   "active_branch": "main",
-  "last_commit": "d2fbc00",
+  "last_commit": "bb7c36c",
   "git_history_available": true,
   "worktree_status": "clean",
   "current_sprint": {
-    "sprint_id": "v0.1.0-alpha",
+    "sprint_id": "v0.4.3",
     "active_tasks": [
       "Sentinel Memory Bank Bootstrapped",
       "AGPLv3 & Golden Rule (Zero Placeholders) Codified",
