@@ -1159,12 +1159,13 @@ func AgentHeartbeat(c *gin.Context) {
 		sig, _ := SignAgentUpdate(targetVer, checksum)
 
 		c.JSON(http.StatusOK, models.AgentUpgradeInstruction{
-			Status:        "ok",
-			Action:        "upgrade",
-			TargetVersion: targetVer,
-			DownloadURL:   fmt.Sprintf("/api/agent/download/%s", platform),
-			SHA256:        checksum,
-			Signature:     sig,
+			Status:          "ok",
+			Action:          "upgrade",
+			TargetVersion:   targetVer,
+			DownloadURL:     fmt.Sprintf("/api/agent/download/%s", platform),
+			SHA256:          checksum,
+			Signature:       sig,
+			UpdatePublicKey: GetUpdatePublicKeyHex(),
 		})
 		return
 	}
@@ -1172,6 +1173,19 @@ func AgentHeartbeat(c *gin.Context) {
 	c.JSON(http.StatusOK, models.AgentUpgradeInstruction{
 		Status: "ok",
 		Action: "none",
+	})
+}
+
+// GetAgentSignerKey returns the appliance Ed25519 update signing public key
+func GetAgentSignerKey(c *gin.Context) {
+	pubKey := GetUpdatePublicKeyHex()
+	if pubKey == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Ajan imza anahtarı henüz başlatılmadı"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"public_key": pubKey,
+		"algorithm":  "Ed25519",
 	})
 }
 

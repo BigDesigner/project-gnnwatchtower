@@ -87,6 +87,22 @@ chmod +x "$INSTALL_DIR/bin/gnnwatchtower-agent"
 install -m 755 "$TEMP_BIN" "$BIN_TARGET"
 rm -rf "$BUILD_DIR"
 
+# .env icinde DB_PATH tanimini garantiye al
+if [ -f "$INSTALL_DIR/.env" ] && ! grep -q "DB_PATH=" "$INSTALL_DIR/.env"; then
+    echo "DB_PATH=$INSTALL_DIR/data/gnnwatchtower.db" >> "$INSTALL_DIR/.env"
+fi
+
+# Eger yerel sunucu uzerinde ajan kuruluysa, ikili dosyayi ve signer.pub anahtarini otomatik guncelle
+if [ -d "/opt/gnnwatchtower-agent" ]; then
+    systemctl stop gnnwatchtower-agent 2>/dev/null || true
+    install -m 755 "$INSTALL_DIR/bin/gnnwatchtower-agent" "/opt/gnnwatchtower-agent/gnnwatchtower-agent"
+    if [ -f "$INSTALL_DIR/data/gnnwatchtower.db" ]; then
+        python3 -c "import sqlite3; con=sqlite3.connect('$INSTALL_DIR/data/gnnwatchtower.db'); r=con.execute('SELECT value FROM system_settings WHERE key=\"agent_update_public_key\"').fetchone(); open('/opt/gnnwatchtower-agent/signer.pub', 'w').write(r[0]) if r and r[0] else None; con.close()" 2>/dev/null || true
+        chmod 644 /opt/gnnwatchtower-agent/signer.pub 2>/dev/null || true
+    fi
+    systemctl start gnnwatchtower-agent 2>/dev/null || true
+fi
+
 # 5. Servisi Yeniden Baslat ve Kontrol Et
 echo -e "${BLUE}[4/4] GNNwatchtower servisi yeniden baslatiliyor...${NC}"
 systemctl daemon-reload

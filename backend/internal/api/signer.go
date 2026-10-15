@@ -68,6 +68,11 @@ func syncPublicKeyToDB(pubHex string) {
 			ON CONFLICT(key) DO UPDATE SET value = $1
 		`, pubHex)
 	}
+
+	// Auto-sync to local appliance agent directory if present
+	if _, err := os.Stat("/opt/gnnwatchtower-agent"); err == nil {
+		_ = os.WriteFile("/opt/gnnwatchtower-agent/signer.pub", []byte(pubHex), 0644)
+	}
 }
 
 // GetUpdatePublicKeyHex returns the 32-byte Ed25519 public key as a 64-char hex string

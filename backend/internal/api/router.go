@@ -53,6 +53,7 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 		api.POST("/agent/enroll", MaxBodySizeMiddleware(256*1024), AgentEnroll)
 		api.POST("/agent/report", MaxBodySizeMiddleware(1024*1024), AgentHeartbeat)
 		api.GET("/agent/download/:platform", DownloadAgentBinary)
+		api.GET("/agent/signer-key", GetAgentSignerKey)
 
 		// Protected Routes (Authentication Required)
 		protected := api.Group("")

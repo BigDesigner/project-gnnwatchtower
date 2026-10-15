@@ -157,12 +157,13 @@ type AgentEnrollResponse struct {
 
 // AgentUpgradeInstruction represents command payload sent in heartbeat response
 type AgentUpgradeInstruction struct {
-	Status        string `json:"status"`
-	Action        string `json:"action"` // "upgrade" or "none"
-	TargetVersion string `json:"target_version,omitempty"`
-	DownloadURL   string `json:"download_url,omitempty"`
-	SHA256        string `json:"sha256,omitempty"`
-	Signature     string `json:"signature,omitempty"`
+	Status          string `json:"status"`
+	Action          string `json:"action"` // "upgrade" or "none"
+	TargetVersion   string `json:"target_version,omitempty"`
+	DownloadURL     string `json:"download_url,omitempty"`
+	SHA256          string `json:"sha256,omitempty"`
+	Signature       string `json:"signature,omitempty"`
+	UpdatePublicKey string `json:"update_public_key,omitempty"`
 }
 
 // DiscoveryHost represents an auto-discovered network node

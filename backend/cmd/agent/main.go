@@ -26,12 +26,13 @@ import (
 )
 
 type ServerHeartbeatResponse struct {
-	Status        string `json:"status"`
-	Action        string `json:"action,omitempty"` // "upgrade" or "none"
-	TargetVersion string `json:"target_version,omitempty"`
-	DownloadURL   string `json:"download_url,omitempty"`
-	SHA256        string `json:"sha256,omitempty"`
-	Signature     string `json:"signature,omitempty"`
+	Status          string `json:"status"`
+	Action          string `json:"action,omitempty"` // "upgrade" or "none"
+	TargetVersion   string `json:"target_version,omitempty"`
+	DownloadURL     string `json:"download_url,omitempty"`
+	SHA256          string `json:"sha256,omitempty"`
+	Signature       string `json:"signature,omitempty"`
+	UpdatePublicKey string `json:"update_public_key,omitempty"`
 }
 
 type AgentReportPayload struct {
@@ -588,11 +589,11 @@ func handleServerInstruction(serverURL, token string, resp *ServerHeartbeatRespo
 		isUpgrading = true
 		upgradeMu.Unlock()
 
-		go performUpgrade(serverURL, token, resp.TargetVersion, resp.DownloadURL, resp.SHA256, resp.Signature)
+		go performUpgrade(serverURL, token, resp.TargetVersion, resp.DownloadURL, resp.SHA256, resp.Signature, resp.UpdatePublicKey)
 	}
 }
 
-func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256, signatureHex string) {
+func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256, signatureHex, updatePubKey string) {
 	log.Printf("[GNNwatchtower Agent] Uzaktan guncelleme talimati alindi! Hedef Surum: v%s", targetVer)
 	logToFile(fmt.Sprintf("[BILGI] Uzaktan guncelleme talimati alindi -> Hedef: v%s", targetVer))
 
@@ -653,6 +654,18 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256, si
 	// Fix R03: Enforce mandatory Ed25519 digital signature verification!
 	// This proves authenticity independently of the transport channel, completely defeating HTTP MITM substitution!
 	signerPubKey := loadSignerKey()
+	if signerPubKey == nil && strings.TrimSpace(updatePubKey) != "" {
+		log.Printf("[GNNwatchtower Agent] Yerel signer.pub anahtarı eksik, sunucu talimatındaki anahtar kaydediliyor...")
+		_ = saveSignerKey(updatePubKey)
+		signerPubKey = loadSignerKey()
+	}
+	if signerPubKey == nil {
+		log.Printf("[GNNwatchtower Agent] Yerel anahtar bulunamadı, sunucudan otomatik alınıyor (/api/agent/signer-key)...")
+		if fetchedKey := fetchSignerKeyFromServer(serverURL); fetchedKey != "" {
+			_ = saveSignerKey(fetchedKey)
+			signerPubKey = loadSignerKey()
+		}
+	}
 	if signerPubKey == nil {
 		setUpgradeState("failed", "Guvenlik: Ajan guncelleme dogrulama anahtari (Signer Key) bulunamadi")
 		logToFile("[HATA] Guvenlik ihlali: Dogrulama anahtari (Signer Key) yuklenemedi, guncelleme durduruldu")
@@ -817,3 +830,25 @@ func writeUpgradeMarker(targetVer string) {
 	})
 	_ = os.WriteFile(markerPath, data, 0644)
 }
+
+func fetchSignerKeyFromServer(serverURL string) string {
+	cleanServerURL := strings.TrimRight(serverURL, "/")
+	reqURL := cleanServerURL + "/api/agent/signer-key"
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(reqURL)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var data struct {
+		PublicKey string `json:"public_key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(data.PublicKey)
+}
+

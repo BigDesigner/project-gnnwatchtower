@@ -136,7 +136,11 @@ func main() {
 
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
-		dbPath = "./data/gnnwatchtower.db"
+		if _, err := os.Stat("/opt/gnnwatchtower/data"); err == nil {
+			dbPath = "/opt/gnnwatchtower/data/gnnwatchtower.db"
+		} else {
+			dbPath = "./data/gnnwatchtower.db"
+		}
 	}
 
 	// 2. Initialize Pure Go SQLite Database (WAL Mode)

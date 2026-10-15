@@ -245,7 +245,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import api from '../services/api'
 
 const props = defineProps({
@@ -297,6 +297,12 @@ const loadSettings = async () => {
 
 onMounted(() => {
   loadSettings()
+})
+
+watch(() => props.isOpen, (newVal) => {
+  if (newVal) {
+    loadSettings()
+  }
 })
 
 const testingChannel = ref(null)

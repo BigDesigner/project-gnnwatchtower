@@ -118,6 +118,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     JWT_SECRET=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32 || date +%s%N | sha256sum | head -c 32)
     cat <<EOF > "$INSTALL_DIR/.env"
 SERVER_PORT=3800
+DB_PATH=/opt/gnnwatchtower/data/gnnwatchtower.db
 GIN_MODE=release
 JWT_SECRET=${JWT_SECRET}
 DEFAULT_SCAN_SUBNET=192.168.1.0/24
