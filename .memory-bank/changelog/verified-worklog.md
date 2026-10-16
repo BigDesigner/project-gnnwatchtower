@@ -185,3 +185,11 @@ Implemented three server-enforced monitoring modes, ICMP-only appliance dispatch
 ## 2026-10-16 — README refresh and explicit Git anonymity rule
 
 Rewrote README in plain Turkish, removed emojis and unsupported deployment/EDR claims, added six factual badges, documented current monitoring categories and ICMP limits, corrected Windows/Linux service names and enrollment commands, and documented build packaging, backup/rollback limits and CLI option persistence. Commands were compared with local source; no installation, service action, test or build was executed. Local documentation links and code fences were checked. Applied the operator-provided sentinel-coauth rule to .agents/AGENTS.md through the required protected-file approval. No staging or commit occurred.
+
+## 2026-10-16 — Restore command-first README
+
+Restored the operator-requested single-line installation and update commands at the top of README. Kept everyday server/agent service commands and badges visible; moved expanded configuration, build, enrollment and troubleshooting guidance into docs/operations.md. Local documentation links were checked. No installation, service operation, test, commit or push was performed for this correction.
+
+## 2026-10-16 — Reachability alarm hotfix
+
+Serialized existing OS ICMP subprocesses, allowed process startup overhead separately from the unchanged reply timeout, and classified local process deadline expiry as unknown. Added bounded failure diagnostics to existing runtime logs. A single failed ICMP observation becomes unknown; only a second consecutive scheduled failure opens an outage, without retries or additional traffic. Fresh authenticated agent telemetry is rechecked in the observation transaction before accepting an offline server result; failed ICMP does not fabricate a last-success timestamp. No new protocol, listener, credentials or privileges. Focused monitor/API tests and Linux zero-CGO build used; customer root cause remains unconfirmed until failure diagnostics are observed.

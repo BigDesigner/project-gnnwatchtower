@@ -52,6 +52,12 @@ func TestICMPBoundaryCadenceIncidents(t *testing.T) {
 	}
 	online = false
 	check()
+	var pendingStatus string
+	db.QueryRow("SELECT status FROM devices WHERE id=?", id).Scan(&pendingStatus)
+	if pendingStatus != "unknown" || len(events) != 0 {
+		t.Fatal("isolated loss reported as outage")
+	}
+	check()
 	check()
 	var count, open int
 	db.QueryRow(`SELECT COUNT(*),SUM(resolved_at IS NULL) FROM downtime_incidents`).Scan(&count, &open)
@@ -102,5 +108,41 @@ func TestRTTRequiresMeasuredValue(t *testing.T) {
 	}
 	if parseRTT("64 bytes from fixture: time=1.234 ms") != 1.234 {
 		t.Fatal("real RTT parsing")
+	}
+}
+
+func TestFreshAgentReportPreventsPingOutage(t *testing.T) {
+	db, err := database.InitDB(filepath.Join(t.TempDir(), "fixture.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	res, err := db.Exec(`INSERT INTO devices(name,ip_address,device_type,monitoring_mode,is_agent_installed,status,last_seen_at) VALUES('Server fixture','192.0.2.90','linux','server',1,'online',datetime('now','-5 seconds'))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	if _, err = db.Exec(`INSERT INTO system_metrics(device_id,cpu_usage_pct,recorded_at) VALUES(?,10,CURRENT_TIMESTAMP)`, id); err != nil {
+		t.Fatal(err)
+	}
+	var alerts int
+	p := Poller{notify: func(string, string, string, string) { alerts++ }}
+	dev := models.Device{ID: int(id), MonitoringMode: models.ModeServer, IPAddress: "192.0.2.90"}
+	if err = p.recordObservation(dev, "offline", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	db.QueryRow("SELECT status FROM devices WHERE id=?", id).Scan(&status)
+	if status != "online" || alerts != 0 {
+		t.Fatal("fresh agent overwritten by ping", status, alerts)
+	}
+	db.Exec(`UPDATE system_metrics SET recorded_at=datetime('now','-2 minutes') WHERE device_id=?`, id)
+	if err = p.recordObservation(dev, "offline", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	db.QueryRow("SELECT status FROM devices WHERE id=?", id).Scan(&status)
+	if status != "offline" || alerts != 1 {
+		t.Fatal("stale agent hid real outage", status, alerts)
 	}
 }

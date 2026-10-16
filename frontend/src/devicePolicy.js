@@ -6,7 +6,7 @@ export const sections = [
  { id: 'incidents', label: 'Olay Günlüğü', icon: 'history' },
  { id: 'backups', label: 'Yedekleme Merkezi', icon: 'backup' }
 ]
-export const stateLabels = { online: 'Erişilebilir', offline: 'Ulaşılamıyor', unknown: 'Henüz Kontrol Edilmedi', stale: 'Güncel Kontrol Yok', maintenance: 'Bakımda', paused: 'İzleme Duraklatıldı' }
+export const stateLabels = { online: 'Erişilebilir', offline: 'Ulaşılamıyor', unknown: 'Sonuç Doğrulanmadı', stale: 'Güncel Kontrol Yok', maintenance: 'Bakımda', paused: 'İzleme Duraklatıldı' }
 export const typeLabels = { windows: 'Windows', linux: 'Linux', ubuntu: 'Ubuntu', debian: 'Debian', centos: 'CentOS', rhel: 'Red Hat', rocky: 'Rocky Linux', almalinux: 'AlmaLinux', nas: 'NAS', synology: 'Synology NAS', qnap: 'QNAP NAS', esxi: 'VMware ESXi', esx: 'VMware ESX', switch: 'Ağ Anahtarı', router: 'Yönlendirici', other: 'Diğer', website: 'Web Sitesi' }
 export const categoryView = d => sections.find(s => s.mode === d.monitoring_mode)?.id || 'ip-devices'
 export const categoryLabel = d => sections.find(s => s.mode === d?.monitoring_mode)?.label || 'Kategorisi Bilinmiyor'

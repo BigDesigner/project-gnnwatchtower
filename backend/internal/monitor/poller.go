@@ -171,18 +171,41 @@ func (p *Poller) recordObservation(dev models.Device, status string, rtt *float6
 		return err
 	}
 	defer tx.Rollback()
-	var previous, mode, profile, address string
-	if err = tx.QueryRow(`SELECT status,monitoring_mode,monitoring_profile,ip_address FROM devices WHERE id=?`, dev.ID).Scan(&previous, &mode, &profile, &address); err != nil {
+	var previous, mode, profile, address, previousProbeNote string
+	if err = tx.QueryRow(`SELECT status,monitoring_mode,monitoring_profile,ip_address,probe_error FROM devices WHERE id=?`, dev.ID).Scan(&previous, &mode, &profile, &address, &previousProbeNote); err != nil {
 		return err
 	}
 	if mode != dev.MonitoringMode || address != dev.IPAddress || profile == "paused" || profile == "maintenance" {
 		return nil
 	}
+	observedOnline := status == "online"
+	probeNote := ""
+	// A recent authenticated report proves reachability even if one ICMP reply is lost.
+	// Recheck inside the transaction so a concurrent heartbeat cannot be overwritten.
+	if status == "offline" && mode == models.ModeServer {
+		var installed bool
+		var reported sql.NullTime
+		if err = tx.QueryRow(`SELECT d.is_agent_installed,m.recorded_at FROM devices d LEFT JOIN system_metrics m ON m.id=(SELECT MAX(id) FROM system_metrics WHERE device_id=d.id) WHERE d.id=?`, dev.ID).Scan(&installed, &reported); err != nil {
+			return err
+		}
+		if installed && reported.Valid && time.Since(reported.Time) >= -30*time.Second && time.Since(reported.Time) <= 90*time.Second {
+			status = "online"
+			rtt = nil
+			probeNote = "ICMP yanıtı yok; güncel ajan raporu var"
+		}
+	}
+	// Confirm loss on the next scheduled observation, without sending retries.
+	const pendingICMP = "ICMP yanıtı alınamadı; doğrulama bekleniyor"
+	if status == "offline" && mode == models.ModeICMP && previous != "offline" && !(previous == "unknown" && previousProbeNote == pendingICMP) {
+		status = "unknown"
+		probeNote = pendingICMP
+		rtt = nil
+	}
 	response := 0
 	if rtt != nil {
 		response = int(*rtt)
 	}
-	_, err = tx.Exec(`UPDATE devices SET status=?,last_checked_at=CURRENT_TIMESTAMP,last_probe_latency_ms=?,probe_error='',http_result=?,response_time_ms=?,last_seen_at=CASE WHEN ?='online' THEN CURRENT_TIMESTAMP ELSE last_seen_at END,last_status_change_at=CASE WHEN status!=? THEN CURRENT_TIMESTAMP ELSE last_status_change_at END,updated_at=CURRENT_TIMESTAMP WHERE id=?`, status, rtt, httpResult, response, status, status, dev.ID)
+	_, err = tx.Exec(`UPDATE devices SET status=?,last_checked_at=CURRENT_TIMESTAMP,last_probe_latency_ms=?,probe_error=?,http_result=?,response_time_ms=?,last_seen_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_seen_at END,last_status_change_at=CASE WHEN status!=? THEN CURRENT_TIMESTAMP ELSE last_status_change_at END,updated_at=CURRENT_TIMESTAMP WHERE id=?`, status, rtt, probeNote, httpResult, response, observedOnline, status, dev.ID)
 	if err != nil {
 		return err
 	}
