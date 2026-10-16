@@ -13,7 +13,7 @@
           <span class="font-mono text-txt-muted text-xs">({{ device.ip_address }})</span>
         </div>
         <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-[#181e28] text-txt-secondary border border-[#232936]">
-          Ajan v{{ device.agent_version || '0.4.10' }}
+          Ajan v{{ device.agent_version || '0.4.11' }}
         </span>
       </div>
 
