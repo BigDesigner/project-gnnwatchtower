@@ -20,7 +20,6 @@ services:
       SERVER_PORT: 3800
       GIN_MODE: release
       JWT_SECRET: ${JWT_SECRET:-gnnwatchtower_secure_jwt_token_2026}
-      DEFAULT_SCAN_SUBNET: ${DEFAULT_SCAN_SUBNET:-192.168.1.0/24}
       DEFAULT_CHECK_INTERVAL: ${DEFAULT_CHECK_INTERVAL:-15}
     volumes:
       - watchtower_data:/opt/gnnwatchtower/data

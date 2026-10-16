@@ -170,7 +170,6 @@ func migrateSchema(db *sql.DB) error {
 	INSERT OR IGNORE INTO system_settings (key, value, description) VALUES
 	('client_company_name', 'Müşteri Altyapısı', 'Müşteri şirket adı'),
 	('client_location', 'Merkez Sistem Odası', 'Müşteri lokasyonu veya şube'),
-	('scan_subnet', '192.168.1.0/24', 'Varsayılan yerel ağ tarama aralığı'),
 	('scan_interval_seconds', '15', 'Aktif cihazlar için genel izleme periyodu (saniye)'),
 	('server_port', '3800', 'GNNwatchtower web ve servis portu'),
 	('power_outage_threshold_count', '3', 'Toplu kesintide elektrik kesintisi varsayılacak eşik cihaz sayısı'),
@@ -205,6 +204,10 @@ func migrateSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_last_upgrade_at DATETIME")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN machine_uuid TEXT DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+
+	if err := migrateMonitoring(db); err != nil {
+		return err
+	}
 
 	// Automatically upgrade agent_latest_version to current release
 	_, _ = db.Exec("UPDATE system_settings SET value = $1 WHERE key = 'agent_latest_version'", version.Get())

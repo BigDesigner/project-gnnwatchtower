@@ -17,6 +17,14 @@ type Device struct {
 	OperatorNotes        string     `json:"operator_notes"`
 	IsAgentInstalled     bool       `json:"is_agent_installed"`
 	AgentToken           string     `json:"agent_token,omitempty"`
+	MonitoringMode       string     `json:"monitoring_mode"`
+	LastCheckedAt        *time.Time `json:"last_checked_at"`
+	LastProbeLatencyMS   *float64   `json:"last_probe_latency_ms"`
+	HTTPResult           string     `json:"http_result,omitempty"`
+	ProbeError           string     `json:"probe_error,omitempty"`
+	ObservationState     string     `json:"observation_state"`
+	LatestMetricAt       *time.Time `json:"latest_metric_at"`
+	TelemetryFresh       bool       `json:"telemetry_fresh"`
 	MonitoringProfile    string     `json:"monitoring_profile"` // active, dormant_24h, dormant_30d, maintenance, paused
 	CheckIntervalSeconds int        `json:"check_interval_seconds"`
 	Status               string     `json:"status"` // online, offline, warning, maintenance, unknown
@@ -26,12 +34,12 @@ type Device struct {
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 
-	AgentVersion         string     `json:"agent_version,omitempty"`
-	AgentUpgradeStatus   string     `json:"agent_upgrade_status,omitempty"` // none, pending, downloading, verifying, applying, failed, success
-	AgentUpgradeTarget   string     `json:"agent_upgrade_target,omitempty"`
-	AgentUpgradeError    string     `json:"agent_upgrade_error,omitempty"`
-	AgentLastUpgradeAt   *time.Time `json:"agent_last_upgrade_at,omitempty"`
-	MachineUUID          string     `json:"machine_uuid,omitempty"`
+	AgentVersion       string     `json:"agent_version,omitempty"`
+	AgentUpgradeStatus string     `json:"agent_upgrade_status,omitempty"` // none, pending, downloading, verifying, applying, failed, success
+	AgentUpgradeTarget string     `json:"agent_upgrade_target,omitempty"`
+	AgentUpgradeError  string     `json:"agent_upgrade_error,omitempty"`
+	AgentLastUpgradeAt *time.Time `json:"agent_last_upgrade_at,omitempty"`
+	MachineUUID        string     `json:"machine_uuid,omitempty"`
 
 	LatestCPU   *float64 `json:"latest_cpu,omitempty"`
 	LatestRAM   *float64 `json:"latest_ram,omitempty"`
@@ -164,15 +172,4 @@ type AgentUpgradeInstruction struct {
 	SHA256          string `json:"sha256,omitempty"`
 	Signature       string `json:"signature,omitempty"`
 	UpdatePublicKey string `json:"update_public_key,omitempty"`
-}
-
-// DiscoveryHost represents an auto-discovered network node
-type DiscoveryHost struct {
-	IPAddress           string `json:"ip_address"`
-	MACAddress          string `json:"mac_address"`
-	Vendor              string `json:"vendor"`
-	Hostname            string `json:"hostname"`
-	OpenPorts           []int  `json:"open_ports"`
-	SuggestedDeviceType string `json:"suggested_device_type"`
-	AlreadyMonitored    bool   `json:"already_monitored"`
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +21,6 @@ import (
 
 	"gnnwatchtower/internal/backup"
 	"gnnwatchtower/internal/database"
-	"gnnwatchtower/internal/discovery"
 	"gnnwatchtower/internal/incident"
 	"gnnwatchtower/internal/models"
 	"gnnwatchtower/internal/monitor"
@@ -31,211 +29,36 @@ import (
 
 // GetDashboardStats returns high-level system summary
 func GetDashboardStats(c *gin.Context) {
-	if database.DB == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database not ready"})
+	devices, err := loadDevices()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Envanter okunamadı"})
 		return
 	}
-
-	var totalDevices, onlineDevices, offlineDevices, warningDevices int
-	_ = database.DB.QueryRow(`
-		SELECT 
-			COUNT(*),
-			COALESCE(SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'offline' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'warning' THEN 1 ELSE 0 END), 0)
-		FROM devices
-	`).Scan(&totalDevices, &onlineDevices, &offlineDevices, &warningDevices)
-
-	var activeProfiles, dormantProfiles, maintenanceProfiles int
-	_ = database.DB.QueryRow(`
-		SELECT 
-			COALESCE(SUM(CASE WHEN monitoring_profile = 'active' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN monitoring_profile IN ('dormant_24h', 'dormant_30d') THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN monitoring_profile = 'maintenance' THEN 1 ELSE 0 END), 0)
-		FROM devices
-	`).Scan(&activeProfiles, &dormantProfiles, &maintenanceProfiles)
-
-	var unclassifiedIncidents int
-	_ = database.DB.QueryRow(`
-		SELECT COUNT(*) FROM downtime_incidents WHERE classified_cause = 'unclassified'
-	`).Scan(&unclassifiedIncidents)
-
-	// Fetch real average temperature from recent system metrics (last 2 hours)
-	var avgTemp sql.NullFloat64
-	_ = database.DB.QueryRow(`
-		SELECT AVG(temperature_celsius)
-		FROM system_metrics
-		WHERE recorded_at >= datetime('now', '-2 hours') AND temperature_celsius > 0
-	`).Scan(&avgTemp)
-
-	var avgTemperature *float64
-	if avgTemp.Valid {
-		v := math.Round(avgTemp.Float64*10) / 10
-		avgTemperature = &v
+	counts := map[string]int{"online": 0, "offline": 0, "unknown": 0, "stale": 0, "maintenance": 0, "paused": 0}
+	categories := map[string]int{"server": 0, "website": 0, "icmp": 0}
+	for _, d := range devices {
+		counts[d.ObservationState]++
+		categories[d.MonitoringMode]++
 	}
-
-	// Fetch client branding
-	var clientCompany, clientLocation string
-	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'client_company_name'").Scan(&clientCompany)
-	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'client_location'").Scan(&clientLocation)
-	if clientCompany == "" {
-		clientCompany = "Müşteri Altyapısı"
+	var ratio *float64
+	observed := counts["online"] + counts["offline"]
+	if observed > 0 {
+		r := float64(counts["online"]) * 100 / float64(observed)
+		ratio = &r
 	}
-	if clientLocation == "" {
-		clientLocation = "Sistem Odası"
-	}
-
-	// Calculate overall average uptime in past 24h
-	uptimePct := 100.0
-	if totalDevices > 0 {
-		uptimePct = float64(onlineDevices) / float64(totalDevices) * 100.0
-	}
-
-	// Probe gateway status
-	gateway := checkGatewayHealth()
-
-	c.JSON(http.StatusOK, gin.H{
-		"client_company_name":    clientCompany,
-		"client_location":        clientLocation,
-		"total_devices":          totalDevices,
-		"online_devices":         onlineDevices,
-		"offline_devices":        offlineDevices,
-		"warning_devices":        warningDevices,
-		"active_profiles":        activeProfiles,
-		"dormant_profiles":       dormantProfiles,
-		"maintenance_profiles":   maintenanceProfiles,
-		"unclassified_incidents":  unclassifiedIncidents,
-		"uptime_percentage":      fmt.Sprintf("%.1f", uptimePct),
-		"avg_temperature":        avgTemperature,
-		"gateway":                gateway,
-	})
+	var company, location string
+	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key='client_company_name'").Scan(&company)
+	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key='client_location'").Scan(&location)
+	c.JSON(200, gin.H{"total_devices": len(devices), "status_counts": counts, "category_counts": categories, "current_reachability_percentage": ratio, "reachability_observed_count": observed, "client_company_name": company, "client_location": location})
 }
 
-// GetDevices returns all devices with nested services
 func GetDevices(c *gin.Context) {
-	if database.DB == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database not ready"})
-		return
-	}
-
-	rows, err := database.DB.Query(`
-		SELECT 
-			d.id, d.name, d.ip_address, d.mac_address, d.device_type, d.os_version, d.purpose, 
-			d.location, d.operator_notes, d.is_agent_installed, d.agent_token, d.monitoring_profile, 
-			d.check_interval_seconds, d.status, d.last_seen_at, d.last_status_change_at, 
-			d.response_time_ms, d.created_at, d.updated_at,
-			d.agent_version, d.agent_upgrade_status, d.agent_upgrade_target, d.agent_upgrade_error,
-			d.agent_last_upgrade_at, d.machine_uuid,
-			m.cpu_usage_pct, m.ram_usage_pct, m.disk_usage_pct, m.temperature_celsius,
-			m.net_rx_kbps, m.net_tx_kbps
-		FROM devices d
-		LEFT JOIN (
-			SELECT sm1.device_id, sm1.cpu_usage_pct, sm1.ram_usage_pct, sm1.disk_usage_pct, 
-			       sm1.temperature_celsius, sm1.net_rx_kbps, sm1.net_tx_kbps
-			FROM system_metrics sm1
-			JOIN (
-				SELECT device_id, MAX(id) as max_id
-				FROM system_metrics
-				GROUP BY device_id
-			) sm2 ON sm1.id = sm2.max_id
-		) m ON d.id = m.device_id
-		ORDER BY d.id ASC
-	`)
+	devices, err := loadDevices()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": "Envanter okunamadı"})
 		return
 	}
-	defer rows.Close()
-
-	var devices []models.Device
-	for rows.Next() {
-		var d models.Device
-		var mac, osVer, purp, loc, notes, token sql.NullString
-		var agentVer, upgStatus, upgTarget, upgErr, machUUID sql.NullString
-		var lastSeen, lastUpgrade sql.NullTime
-		var cpu, ram, disk, temp, netRx, netTx sql.NullFloat64
-
-		if err := rows.Scan(&d.ID, &d.Name, &d.IPAddress, &mac, &d.DeviceType, &osVer, &purp, &loc, &notes,
-			&d.IsAgentInstalled, &token, &d.MonitoringProfile, &d.CheckIntervalSeconds, &d.Status,
-			&lastSeen, &d.LastStatusChangeAt, &d.ResponseTimeMS, &d.CreatedAt, &d.UpdatedAt,
-			&agentVer, &upgStatus, &upgTarget, &upgErr, &lastUpgrade, &machUUID,
-			&cpu, &ram, &disk, &temp, &netRx, &netTx); err == nil {
-			if mac.Valid {
-				d.MACAddress = mac.String
-			}
-			if osVer.Valid {
-				d.OSVersion = osVer.String
-			}
-			if purp.Valid {
-				d.Purpose = purp.String
-			}
-			if loc.Valid {
-				d.Location = loc.String
-			}
-			if notes.Valid {
-				d.OperatorNotes = notes.String
-			}
-			if token.Valid {
-				d.AgentToken = token.String
-			}
-			if lastSeen.Valid {
-				d.LastSeenAt = &lastSeen.Time
-			}
-			if agentVer.Valid {
-				d.AgentVersion = agentVer.String
-			}
-			if upgStatus.Valid {
-				d.AgentUpgradeStatus = upgStatus.String
-			}
-			if upgTarget.Valid {
-				d.AgentUpgradeTarget = upgTarget.String
-			}
-			if upgErr.Valid {
-				d.AgentUpgradeError = upgErr.String
-			}
-			if lastUpgrade.Valid {
-				d.AgentLastUpgradeAt = &lastUpgrade.Time
-			}
-			if machUUID.Valid {
-				d.MachineUUID = machUUID.String
-			}
-
-			if cpu.Valid {
-				v := math.Round(cpu.Float64*10) / 10
-				d.LatestCPU = &v
-			}
-			if ram.Valid {
-				v := math.Round(ram.Float64*10) / 10
-				d.LatestRAM = &v
-			}
-			if disk.Valid {
-				v := math.Round(disk.Float64*10) / 10
-				d.LatestDisk = &v
-			}
-			if temp.Valid && temp.Float64 > 0 {
-				v := math.Round(temp.Float64*10) / 10
-				d.LatestTemp = &v
-			}
-			if netRx.Valid {
-				v := math.Round(netRx.Float64*10) / 10
-				d.LatestNetRx = &v
-			}
-			if netTx.Valid {
-				v := math.Round(netTx.Float64*10) / 10
-				d.LatestNetTx = &v
-			}
-
-			// Attach services
-			d.Services = getServices(d.ID)
-			devices = append(devices, d)
-		}
-	}
-
-	if devices == nil {
-		devices = []models.Device{}
-	}
-
-	c.JSON(http.StatusOK, devices)
+	c.JSON(200, devices)
 }
 
 func getServices(devID int) []models.ServiceMonitored {
@@ -270,114 +93,88 @@ func getServices(devID int) []models.ServiceMonitored {
 	return list
 }
 
-// CreateDevice adds a new device manually or from discovery
+// CreateDevice manually registers a validated monitoring target
 func CreateDevice(c *gin.Context) {
-	var input struct {
-		Name                 string `json:"name" binding:"required"`
-		IPAddress            string `json:"ip_address" binding:"required"`
-		MACAddress           string `json:"mac_address"`
-		DeviceType           string `json:"device_type"`
-		OSVersion            string `json:"os_version"`
-		Purpose              string `json:"purpose"`
-		Location             string `json:"location"`
-		OperatorNotes        string `json:"operator_notes"`
-		MonitoringProfile    string `json:"monitoring_profile"`
-		CheckIntervalSeconds int    `json:"check_interval_seconds"`
-	}
-
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	var d models.Device
+	if c.ShouldBindJSON(&d) != nil {
+		c.JSON(400, gin.H{"error": "Geçersiz cihaz verisi"})
 		return
 	}
-
-	if input.MonitoringProfile == "" {
-		input.MonitoringProfile = "active"
+	if err := models.NormalizeDevice(&d); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
 	}
-	if input.CheckIntervalSeconds == 0 {
-		input.CheckIntervalSeconds = 15
+	var token any
+	if d.MonitoringMode == models.ModeServer {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			c.JSON(500, gin.H{"error": "Kayıt anahtarı oluşturulamadı"})
+			return
+		}
+		token = hex.EncodeToString(b)
 	}
-	if input.DeviceType == "" {
-		input.DeviceType = "other"
-	}
-
-	input.IPAddress = strings.TrimSpace(input.IPAddress)
-	input.Name = strings.TrimSpace(input.Name)
-	if strings.EqualFold(input.DeviceType, "website") && !strings.HasPrefix(input.IPAddress, "http://") && !strings.HasPrefix(input.IPAddress, "https://") {
-		input.IPAddress = "https://" + input.IPAddress
-	}
-
-	// Generate agent token
-	tokenBytes := make([]byte, 16)
-	_, _ = rand.Read(tokenBytes)
-	agentToken := hex.EncodeToString(tokenBytes)
-
 	var id int
-	err := database.DB.QueryRow(`
-		INSERT INTO devices (name, ip_address, mac_address, device_type, os_version, purpose, location, operator_notes, agent_token, monitoring_profile, check_interval_seconds, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'unknown')
-		RETURNING id
-	`, input.Name, input.IPAddress, input.MACAddress, input.DeviceType, input.OSVersion, input.Purpose,
-		input.Location, input.OperatorNotes, agentToken, input.MonitoringProfile, input.CheckIntervalSeconds).Scan(&id)
-
+	err := database.DB.QueryRow(`INSERT INTO devices(name,ip_address,mac_address,device_type,os_version,purpose,location,operator_notes,monitoring_mode,monitoring_profile,check_interval_seconds,agent_token,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'unknown') RETURNING id`, d.Name, d.IPAddress, d.MACAddress, d.DeviceType, d.OSVersion, d.Purpose, d.Location, d.OperatorNotes, d.MonitoringMode, d.MonitoringProfile, d.CheckIntervalSeconds, token).Scan(&id)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "Cihaz IP adresi zaten kayıtlı veya veritabanı hatası: " + err.Error()})
+		c.JSON(409, gin.H{"error": "Hedef zaten kayıtlı veya cihaz kaydedilemedi"})
 		return
 	}
-
-	incident.DispatchAlert(input.Name, input.IPAddress, "YENİ CİHAZ EKLENDİ", fmt.Sprintf("Envantere yeni bir cihaz kaydedildi (Tip: %s, Profil: %s).", input.DeviceType, input.MonitoringProfile))
-
-	c.JSON(http.StatusCreated, gin.H{"id": id, "agent_token": agentToken, "message": "Cihaz başarıyla eklendi."})
+	incident.DispatchAlert(d.Name, d.IPAddress, "YENİ CİHAZ EKLENDİ", "Cihaz envantere kaydedildi; ilk kontrol bekleniyor.")
+	result := gin.H{"id": id, "message": "Cihaz eklendi"}
+	if token != nil {
+		result["agent_token"] = token
+	}
+	c.JSON(201, result)
 }
 
-// UpdateDevice modifies operator metadata and monitoring configurations
 func UpdateDevice(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id < 1 {
+		c.JSON(400, gin.H{"error": "Geçersiz cihaz kimliği"})
+		return
+	}
+	tx, err := database.DB.Begin()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz cihaz ID"})
+		c.JSON(500, gin.H{"error": "Kayıt açılamadı"})
 		return
 	}
-
-	var input struct {
-		Name                 string `json:"name"`
-		DeviceType           string `json:"device_type"`
-		OSVersion            string `json:"os_version"`
-		Purpose              string `json:"purpose"`
-		Location             string `json:"location"`
-		OperatorNotes        string `json:"operator_notes"`
-		MonitoringProfile    string `json:"monitoring_profile"`
-		CheckIntervalSeconds int    `json:"check_interval_seconds"`
-	}
-
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	_, err = database.DB.Exec(`
-		UPDATE devices
-		SET name = COALESCE(NULLIF($1, ''), name),
-		    device_type = COALESCE(NULLIF($2, ''), device_type),
-		    os_version = $3,
-		    purpose = $4,
-		    location = $5,
-		    operator_notes = $6,
-		    monitoring_profile = COALESCE(NULLIF($7, ''), monitoring_profile),
-		    check_interval_seconds = CASE WHEN $8 > 0 THEN $8 ELSE check_interval_seconds END,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $9
-	`, input.Name, input.DeviceType, input.OSVersion, input.Purpose, input.Location,
-		input.OperatorNotes, input.MonitoringProfile, input.CheckIntervalSeconds, id)
-
+	defer tx.Rollback()
+	var d models.Device
+	err = tx.QueryRow(`SELECT id,name,ip_address,device_type,monitoring_mode,COALESCE(os_version,''),COALESCE(purpose,''),COALESCE(location,''),COALESCE(operator_notes,''),monitoring_profile,check_interval_seconds FROM devices WHERE id=?`, id).Scan(&d.ID, &d.Name, &d.IPAddress, &d.DeviceType, &d.MonitoringMode, &d.OSVersion, &d.Purpose, &d.Location, &d.OperatorNotes, &d.MonitoringProfile, &d.CheckIntervalSeconds)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(404, gin.H{"error": "Cihaz bulunamadı"})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Cihaz bilgileri güncellendi."})
+	oldMode, oldAddress, oldProfile := d.MonitoringMode, d.IPAddress, d.MonitoringProfile
+	// Decode over existing metadata so omitted fields remain intact.
+	if c.ShouldBindJSON(&d) != nil {
+		c.JSON(400, gin.H{"error": "Geçersiz cihaz verisi"})
+		return
+	}
+	if d.MonitoringMode != oldMode || d.ID != id {
+		c.JSON(400, gin.H{"error": "Mevcut kaydın izleme kategorisi değiştirilemez"})
+		return
+	}
+	if err = models.NormalizeDevice(&d); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	_, err = tx.Exec(`UPDATE devices SET name=?,ip_address=?,device_type=?,os_version=?,purpose=?,location=?,operator_notes=?,monitoring_profile=?,check_interval_seconds=?,status=CASE WHEN ip_address!=? THEN 'unknown' ELSE status END,last_checked_at=CASE WHEN ip_address!=? THEN NULL ELSE last_checked_at END,last_probe_latency_ms=CASE WHEN ip_address!=? THEN NULL ELSE last_probe_latency_ms END,updated_at=CURRENT_TIMESTAMP WHERE id=?`, d.Name, d.IPAddress, d.DeviceType, d.OSVersion, d.Purpose, d.Location, d.OperatorNotes, d.MonitoringProfile, d.CheckIntervalSeconds, d.IPAddress, d.IPAddress, d.IPAddress, id)
+	// Resuming a deliberately suspended monitor requires a new observation.
+	if err == nil && (oldAddress != d.IPAddress || ((oldProfile == "maintenance" || oldProfile == "paused") && d.MonitoringProfile != "maintenance" && d.MonitoringProfile != "paused")) {
+		_, err = tx.Exec(`UPDATE devices SET last_checked_at=NULL,last_probe_latency_ms=NULL,status='unknown',probe_error='',http_result='' WHERE id=?`, id)
+	}
+	if err != nil {
+		c.JSON(409, gin.H{"error": "Hedef zaten kayıtlı veya güncelleme başarısız"})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		c.JSON(500, gin.H{"error": "Güncelleme kaydedilemedi"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "Cihaz güncellendi"})
 }
 
-// DeleteDevice deletes a device
 func DeleteDevice(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -386,7 +183,22 @@ func DeleteDevice(c *gin.Context) {
 		return
 	}
 
-	_, err = database.DB.Exec("DELETE FROM devices WHERE id = $1", id)
+	tx, e := database.DB.Begin()
+	if e != nil {
+		c.JSON(500, gin.H{"error": "Silme işlemi başlatılamadı"})
+		return
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"services_monitored", "downtime_incidents", "system_metrics"} {
+		if _, e = tx.Exec("DELETE FROM "+table+" WHERE device_id=?", id); e != nil {
+			c.JSON(500, gin.H{"error": "Bağlı kayıtlar silinemedi"})
+			return
+		}
+	}
+	_, err = tx.Exec("DELETE FROM devices WHERE id=?", id)
+	if err == nil {
+		err = tx.Commit()
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -401,6 +213,10 @@ func AddServiceToDevice(c *gin.Context) {
 	devID, err := strconv.Atoi(idStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz cihaz ID"})
+		return
+	}
+
+	if !requireServerMode(c, devID) {
 		return
 	}
 
@@ -424,6 +240,10 @@ func AddServiceToDevice(c *gin.Context) {
 		input.ExpectedStatusCode = 200
 	}
 
+	if input.TargetPort < 1 || input.TargetPort > 65535 || (input.CheckType != "tcp_port" && input.CheckType != "http") || (input.TargetPath != "" && !strings.HasPrefix(input.TargetPath, "/")) {
+		c.JSON(400, gin.H{"error": "Geçersiz servis hedefi"})
+		return
+	}
 	var servID int
 	err = database.DB.QueryRow(`
 		INSERT INTO services_monitored (device_id, name, check_type, target_port, target_path, expected_status_code)
@@ -448,7 +268,7 @@ func DeleteService(c *gin.Context) {
 		return
 	}
 
-	_, err = database.DB.Exec("DELETE FROM services_monitored WHERE id = $1", sID)
+	_, err = database.DB.Exec("DELETE FROM services_monitored WHERE id = $1 AND device_id=$2", sID, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -457,39 +277,6 @@ func DeleteService(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Servis izlemeden kaldırıldı."})
 }
 
-// TriggerDiscovery scans subnet for active hosts
-func TriggerDiscovery(c *gin.Context) {
-	var input struct {
-		Subnet string `json:"subnet"`
-	}
-	_ = c.ShouldBindJSON(&input)
-
-	subnet := input.Subnet
-	if subnet == "" {
-		// Read from settings
-		var val string
-		err := database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'scan_subnet'").Scan(&val)
-		if err == nil && val != "" {
-			subnet = val
-		} else {
-			subnet = "192.168.1.0/24"
-		}
-	}
-
-	hosts, err := discovery.ScanSubnet(subnet)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"subnet":  subnet,
-		"count":   len(hosts),
-		"devices": hosts,
-	})
-}
-
-// GetIncidents returns historical downtime log with auto & operator causes
 func GetIncidents(c *gin.Context) {
 	rows, err := database.DB.Query(`
 		SELECT i.id, i.device_id, d.name, i.started_at, i.resolved_at, i.duration_seconds,
@@ -562,6 +349,12 @@ func ClassifyIncident(c *gin.Context) {
 		return
 	}
 
+	switch input.ClassifiedCause {
+	case "power_outage", "planned_maintenance", "system_crash", "network_failure", "unclassified":
+	default:
+		c.JSON(400, gin.H{"error": "Geçersiz olay sınıflandırması"})
+		return
+	}
 	if input.OperatorName == "" {
 		input.OperatorName = "Sistem Operatörü"
 	}
@@ -658,7 +451,7 @@ func ImportBackup(c *gin.Context) {
 
 // GetSettings lists system configuration keys as a direct key-value map
 func GetSettings(c *gin.Context) {
-	rows, err := database.DB.Query("SELECT key, value FROM system_settings")
+	rows, err := database.DB.Query("SELECT key, value FROM system_settings WHERE key != 'scan_subnet'")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -707,6 +500,9 @@ func UpdateSettings(c *gin.Context) {
 	defer stmt.Close()
 
 	for k, rawVal := range input {
+		if k == "scan_subnet" {
+			continue
+		}
 		// Ignore empty keys or numerical array indices (e.g., "0", "1")
 		if k == "" || len(k) < 2 {
 			continue
@@ -892,7 +688,7 @@ func AgentEnroll(c *gin.Context) {
 
 	// Fix R06: Ensure targetIP is a valid IP address literal (strictly reject URLs, loopback or unparseable formats)
 	parsedIP := net.ParseIP(targetIP)
-	if parsedIP == nil {
+	if parsedIP == nil || !models.ValidIP(targetIP) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz IP adresi biçimi. Yalnızca geçerli IPv4 veya IPv6 adresleri kabul edilir."})
 		return
 	}
@@ -922,6 +718,9 @@ func AgentEnroll(c *gin.Context) {
 		_ = database.DB.QueryRow("SELECT id FROM devices WHERE LOWER(name) = LOWER($1)", req.Hostname).Scan(&preDevID)
 	}
 
+	if preDevID > 0 && !requireServerMode(c, preDevID) {
+		return
+	}
 	if !keyMatches && preDevID == 0 {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz veya eksik ajan kayıt anahtarı (Enrollment Key)"})
 		return
@@ -972,10 +771,17 @@ func AgentEnroll(c *gin.Context) {
 	}
 
 	if devID > 0 {
+		if !requireServerMode(c, devID) {
+			return
+		}
 		// Fix R01: Prevent rogue device hijacking and token overwrites.
 		var currentToken string
 		var registeredIP string
-		_ = database.DB.QueryRow("SELECT agent_token, ip_address FROM devices WHERE id = $1", devID).Scan(&currentToken, &registeredIP)
+		var registeredAgent bool
+		if err := database.DB.QueryRow("SELECT COALESCE(agent_token,''), ip_address,is_agent_installed FROM devices WHERE id = $1", devID).Scan(&currentToken, &registeredIP, &registeredAgent); err != nil {
+			c.JSON(500, gin.H{"error": "Ajan kaydı okunamadı"})
+			return
+		}
 		currentToken = strings.TrimSpace(currentToken)
 
 		reqAgentToken := strings.TrimSpace(c.GetHeader("X-Agent-Token"))
@@ -983,9 +789,9 @@ func AgentEnroll(c *gin.Context) {
 			reqAgentToken = strings.TrimSpace(req.AgentToken)
 		}
 
-		isAuthorizedReEnroll := keyMatches || (reqAgentToken != "" && reqAgentToken == currentToken) || (req.MachineUUID != "" && targetIP == registeredIP) || (targetIP == registeredIP && devID > 0) || (targetIP == clientIP && devID > 0)
+		isAuthorizedReEnroll := (reqAgentToken != "" && reqAgentToken == currentToken) || (!registeredAgent && keyMatches)
 
-		if currentToken != "" && !isAuthorizedReEnroll {
+		if !isAuthorizedReEnroll {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "Bu cihaz zaten kayıtlıdır. Mevcut cihazın ajan anahtarını yenilemek için geçerli X-Agent-Token sunulmalıdır.",
 			})
@@ -993,7 +799,7 @@ func AgentEnroll(c *gin.Context) {
 		}
 
 		// Existing device enrolled!
-		_, _ = database.DB.Exec(`
+		_, updateErr := database.DB.Exec(`
 			UPDATE devices 
 			SET agent_token = $1,
 			    is_agent_installed = 1,
@@ -1008,6 +814,10 @@ func AgentEnroll(c *gin.Context) {
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE id = $7
 		`, agentToken, agentVer, req.MachineUUID, req.MACAddress, req.OSName+" "+req.OSVersion, devType, devID)
+		if updateErr != nil {
+			c.JSON(500, gin.H{"error": "Ajan kaydı güncellenemedi"})
+			return
+		}
 
 		log.Printf("[GNNwatchtower Core] Kayıtlı cihaz '%s' (%s) imza anahtarı ve oturum tokenını güncelledi.", existingName, targetIP)
 	} else {
@@ -1071,6 +881,19 @@ func AgentHeartbeat(c *gin.Context) {
 		return
 	}
 
+	if !requireServerMode(c, devID) {
+		return
+	}
+
+	var profile string
+	if database.DB.QueryRow("SELECT monitoring_profile FROM devices WHERE id=?", devID).Scan(&profile) != nil {
+		c.JSON(404, gin.H{"error": "Cihaz bulunamadı"})
+		return
+	}
+	if profile == "paused" || profile == "maintenance" {
+		c.JSON(200, models.AgentUpgradeInstruction{Status: "monitoring_suspended", Action: "none"})
+		return
+	}
 	// If agent is reporting graceful shutdown
 	if report.IsShuttingDown {
 		reason := report.ShutdownReason
@@ -1230,6 +1053,14 @@ func TriggerAgentUpgrade(c *gin.Context) {
 	}
 
 	id := c.Param("id")
+	numericID, e := strconv.Atoi(id)
+	if e != nil {
+		c.JSON(400, gin.H{"error": "Geçersiz cihaz kimliği"})
+		return
+	}
+	if !requireServerMode(c, numericID) {
+		return
+	}
 	var targetVersion string
 	_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_latest_version'").Scan(&targetVersion)
 	if targetVersion == "" {
@@ -1241,7 +1072,7 @@ func TriggerAgentUpgrade(c *gin.Context) {
 		SET agent_upgrade_status = 'pending',
 		    agent_upgrade_target = $1,
 		    agent_upgrade_error = ''
-		WHERE id = $2 AND is_agent_installed = 1
+		WHERE id = $2 AND is_agent_installed = 1 AND monitoring_mode='server'
 	`, targetVersion, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1278,7 +1109,7 @@ func TriggerAllAgentsUpgrade(c *gin.Context) {
 		SET agent_upgrade_status = 'pending',
 		    agent_upgrade_target = $1,
 		    agent_upgrade_error = ''
-		WHERE is_agent_installed = 1
+		WHERE is_agent_installed = 1 AND monitoring_mode='server'
 	`, targetVersion)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1585,26 +1416,21 @@ func DownloadAgentBinary(c *gin.Context) {
 
 // checkGatewayHealth tests default gateway reachability and ping latency
 func checkGatewayHealth() gin.H {
-	var gwIP string
+	var ip string
 	if database.DB != nil {
-		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key = 'default_gateway'").Scan(&gwIP)
+		_ = database.DB.QueryRow("SELECT value FROM system_settings WHERE key='default_gateway'").Scan(&ip)
 	}
-	if gwIP == "" {
-		gwIP = "192.168.1.1"
+	if !models.ValidIP(ip) {
+		return gin.H{"status": "unknown", "ip": nil, "latency_ms": nil}
 	}
-
-	isOnline, latencyMs := monitor.PingHost(gwIP, 1*time.Second)
-
+	online, rtt, err := monitor.ProbeICMP(ip, time.Second)
 	status := "offline"
-	if isOnline {
+	if err != nil {
+		status = "unknown"
+	} else if online {
 		status = "online"
 	}
-
-	return gin.H{
-		"ip":         gwIP,
-		"status":     status,
-		"latency_ms": fmt.Sprintf("%.1f", latencyMs),
-	}
+	return gin.H{"ip": ip, "status": status, "latency_ms": rtt}
 }
 
 // GetGatewayHealth returns live gateway status
@@ -1626,6 +1452,9 @@ func GetDeviceTelemetry(c *gin.Context) {
 		return
 	}
 
+	if !requireServerMode(c, devID) {
+		return
+	}
 	rows, err := database.DB.Query(`
 		SELECT cpu_usage_pct, ram_usage_pct, disk_usage_pct, temperature_celsius, net_rx_kbps, net_tx_kbps, recorded_at
 		FROM system_metrics
@@ -1639,19 +1468,19 @@ func GetDeviceTelemetry(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var points []gin.H
+	points := []gin.H{}
 	for rows.Next() {
 		var cpu, ram, disk, temp, netRx, netTx sql.NullFloat64
 		var recordedAt time.Time
 		if err := rows.Scan(&cpu, &ram, &disk, &temp, &netRx, &netTx, &recordedAt); err == nil {
 			points = append(points, gin.H{
-				"cpu":         math.Round(cpu.Float64*10) / 10,
-				"ram":         math.Round(ram.Float64*10) / 10,
-				"disk":        math.Round(disk.Float64*10) / 10,
-				"temp":        math.Round(temp.Float64*10) / 10,
-				"net_rx":      math.Round(netRx.Float64*10) / 10,
-				"net_tx":      math.Round(netTx.Float64*10) / 10,
-				"recorded_at": recordedAt.Format("15:04:05"),
+				"cpu":         telemetryNumber(cpu),
+				"ram":         telemetryNumber(ram),
+				"disk":        telemetryNumber(disk),
+				"temp":        telemetryNumber(temp),
+				"net_rx":      telemetryNumber(netRx),
+				"net_tx":      telemetryNumber(netTx),
+				"recorded_at": recordedAt.UTC().Format(time.RFC3339),
 			})
 		}
 	}
@@ -1661,5 +1490,3 @@ func GetDeviceTelemetry(c *gin.Context) {
 		"metrics":   points,
 	})
 }
-
-

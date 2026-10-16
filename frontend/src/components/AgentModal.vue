@@ -5,7 +5,7 @@
       <div class="p-4 border-b border-[#232936] flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="material-symbols-outlined text-emerald-400">verified_user</span>
-          <h3 class="text-sm font-semibold text-white">Kurumsal Telemetri Ajanı Dağıtımı (v{{ APP_VERSION }})</h3>
+          <h3 class="text-sm font-semibold text-white">Ajan Dağıtımı (v{{ APP_VERSION }})</h3>
         </div>
         <button @click="$emit('close')" class="text-txt-muted hover:text-white">
           <span class="material-symbols-outlined text-[20px]">close</span>
@@ -17,8 +17,8 @@
         <div class="p-3 rounded bg-blue-950/30 border border-blue-900/40 text-blue-300 text-[11px] leading-relaxed flex items-start gap-2.5">
           <span class="material-symbols-outlined text-[18px] text-blue-400 shrink-0 mt-0.5">info</span>
           <div>
-            <span class="font-semibold text-white">Güvenli Otomatik Kayıt (Zero-Touch Auto-Enrollment):</span>
-            Ajanlar merkeze kayıt anahtarı (Enrollment Key) ile tescil edilir ve şifreli yerel oturum tokenı üretir. Yetkisiz uç noktaların telemetri göndermesi veya cihaz taklidi yapması engellenir.
+            <span class="font-semibold text-white">Ajan Kayıt Akışı:</span>
+            Yalnızca mevcut güvenlik politikası kapsamında yetkilendirilmiş Windows/Linux uç noktalarında kullanın. Bu ekran komutları kendiliğinden çalıştırmaz. NAS ve ESXi cihazlarına ajan kurulmaz.
           </div>
         </div>
 
@@ -42,7 +42,7 @@
             class="px-3 py-1.5 rounded-t flex items-center gap-1.5 transition-colors"
           >
             <span class="material-symbols-outlined text-[14px]">desktop_windows</span>
-            <span>Windows Server (PowerShell)</span>
+            <span>Windows (PowerShell)</span>
           </button>
           <button 
             @click="activeMethod = 'linux'"
@@ -65,7 +65,7 @@
         <!-- 1. Windows Server PowerShell Tab -->
         <div v-if="activeMethod === 'powershell'" class="flex flex-col gap-2">
           <div class="flex items-center justify-between text-txt-secondary font-medium">
-            <span class="text-txt-muted text-[11px]">Yönetici (Run as Administrator) PowerShell penceresinde çalıştırın:</span>
+            <span class="text-txt-muted text-[11px]">Yönetici PowerShell penceresinde çalıştırın:</span>
             <button 
               @click="copyText(winCmd, 'win')"
               class="text-blue-400 hover:text-blue-300 flex items-center gap-1"
@@ -78,7 +78,7 @@
             {{ winCmd }}
           </div>
           <p class="text-[10px] text-txt-muted">
-            * Dosya tabanlı indirme yürütür, hafıza içi (in-memory `iex`) çalıştırmaz ve doğrudan yerel Windows Hizmeti (SCM) olarak kaydeder.
+            * Dosya tabanlı indirme yürütür, hafıza içi (`iex`) çalıştırmaz ve doğrudan yerel Windows Hizmeti (SCM) olarak kaydeder.
           </p>
         </div>
 
@@ -117,7 +117,7 @@
               class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#1e2533] hover:bg-[#283142] text-txt-primary border border-[#232936] font-medium"
             >
               <span class="material-symbols-outlined text-[16px]">download</span>
-              <span>Linux Binary İndir</span>
+              <span>Linux Ajanını İndir</span>
             </a>
           </div>
 
@@ -144,7 +144,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { APP_VERSION } from '../version'
 import api from '../services/api'
 
@@ -158,15 +158,14 @@ const copied = ref('')
 const activeMethod = ref('powershell')
 const enrollmentKey = ref('')
 
-watch(() => props.isOpen, (newVal) => {
-  if (newVal) {
-    api.getSettings().then(s => {
-      if (s && s.agent_enrollment_key) {
-        enrollmentKey.value = s.agent_enrollment_key
-      }
-    }).catch(() => {})
-  }
+let requestEpoch = 0
+watch(() => props.isOpen, async open => {
+ const epoch = ++requestEpoch
+ enrollmentKey.value = ''; copied.value = ''; activeMethod.value = 'powershell'
+ if (!open) return
+ try { const settings = await api.getSettings(); if (epoch === requestEpoch && props.isOpen) enrollmentKey.value = settings.agent_enrollment_key || '' } catch { enrollmentKey.value = '' }
 }, { immediate: true })
+onUnmounted(() => { requestEpoch++; enrollmentKey.value = ''; copied.value = '' })
 
 const safeEnrollKey = computed(() => {
   const k = (enrollmentKey.value || '').trim()

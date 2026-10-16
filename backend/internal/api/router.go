@@ -87,9 +87,6 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 			protected.POST("/devices/:id/services", AddServiceToDevice)
 			protected.DELETE("/devices/:id/services/:serviceId", DeleteService)
 
-			// Subnet Discovery
-			protected.POST("/discovery/scan", TriggerDiscovery)
-
 			// Downtime Incidents
 			protected.GET("/incidents", GetIncidents)
 			protected.PUT("/incidents/:id/classify", ClassifyIncident)
@@ -111,7 +108,7 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 		r.NoRoute(func(c *gin.Context) {
 			path := c.Request.URL.Path
 			if strings.HasPrefix(path, "/api") {
-				c.JSON(http.StatusNotFound, gin.H{"error": "API route not found"})
+				c.JSON(http.StatusNotFound, gin.H{"error": "API yolu bulunamadı"})
 				return
 			}
 

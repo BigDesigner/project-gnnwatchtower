@@ -1,5 +1,10 @@
 # Session Handoff (GNNwatchtower)
 
+## 2026-10-16 — Approved redesign implemented locally
+
+The monitoring redesign and TASK-001 are implemented. Local regression tests, frontend build and isolated browser review passed. See [validation report](../.memory-bank/audits/monitoring-redesign-validation-2026-10-16.md) for evidence and rollback requirements. No production database, fleet, firewall or deployment was operated. Do not downgrade an older executable onto the migrated database. Existing security audit debt remains open. Older entries below describe historical sessions and are not current fleet-status evidence.
+
+
 ## Session Summary (v0.4.10)
 - **Session Timestamp**: 2026-10-15T21:18:00+03:00
 - **Operating Mode**: Interactive
@@ -13,7 +18,7 @@
    - Prevented overwriting `agent_upgrade_status = 'pending'` when receiving stale heartbeat failure reports during ongoing upgrades.
    - Dispatched `Action: "upgrade"` directly to pending target devices with valid Ed25519 signatures and SHA-256 binary validation.
    - Suppressed redundant `AJAN OTOMATİK BAĞLANDI` notification alerts on routine device re-enrollments.
-   - Fully upgraded all nodes in fleet (`gnnwatchtower`, `SSAKANSU01`, `IBMSRV`) to `v0.4.10`.
+   - Fully upgraded all nodes in fleet (`gnnwatchtower`, `<REDACTED>`, `<REDACTED>`) to `v0.4.10`.
 2. **Dashboard UI Refinements & Asset Compilation**:
    - Added explicit `#ID` columns to Nodes, NAS, and Web tables in `frontend/src/components/DeviceTable.vue`.
    - Linked Device Name and IP directly to incident logs table in `frontend/src/App.vue`.

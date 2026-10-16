@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,9 +19,13 @@ import (
 
 // Poller manages continuous device & service checks
 type Poller struct {
-	ticker   *time.Ticker
-	stopChan chan struct{}
-	mu       sync.Mutex
+	ticker       *time.Ticker
+	stopChan     chan struct{}
+	mu           sync.Mutex
+	icmpProbe    func(string, time.Duration) (bool, *float64, error)
+	websiteProbe func(string, time.Duration) (bool, float64, int, string)
+	serviceProbe func(models.ServiceMonitored, string)
+	notify       func(string, string, string, string)
 }
 
 var GlobalPoller *Poller
@@ -62,166 +67,197 @@ func (p *Poller) pollDevices() {
 	if database.DB == nil {
 		return
 	}
-
-	rows, err := database.DB.Query(`
-		SELECT id, name, ip_address, device_type, monitoring_profile, check_interval_seconds, status, last_seen_at
-		FROM devices
-		WHERE monitoring_profile != 'paused' AND monitoring_profile != 'maintenance'
-	`)
+	rows, err := database.DB.Query(`SELECT id,name,ip_address,device_type,monitoring_mode,monitoring_profile,check_interval_seconds,status,last_checked_at FROM devices WHERE monitoring_profile NOT IN ('paused','maintenance')`)
 	if err != nil {
-		log.Printf("[Monitor] Query error fetching devices: %v", err)
+		log.Printf("[Monitor] Cannot load inventory: %v", err)
 		return
 	}
-	defer rows.Close()
-
-	var devicesToCheck []models.Device
-	now := time.Now()
-
+	var devices []models.Device
 	for rows.Next() {
 		var d models.Device
-		var lastSeen sql.NullTime
-		if err := rows.Scan(&d.ID, &d.Name, &d.IPAddress, &d.DeviceType, &d.MonitoringProfile, &d.CheckIntervalSeconds, &d.Status, &lastSeen); err == nil {
-			if lastSeen.Valid {
-				d.LastSeenAt = &lastSeen.Time
-			}
-
-			// Check based on profile frequency
-			shouldCheck := false
-			switch d.MonitoringProfile {
-			case "active":
-				shouldCheck = true
-			case "dormant_24h":
-				if d.LastSeenAt == nil || now.Sub(*d.LastSeenAt) >= 24*time.Hour {
-					shouldCheck = true
-				}
-			case "dormant_30d":
-				if d.LastSeenAt == nil || now.Sub(*d.LastSeenAt) >= 30*24*time.Hour {
-					shouldCheck = true
-				}
-			default:
-				shouldCheck = true
-			}
-
-			if shouldCheck {
-				devicesToCheck = append(devicesToCheck, d)
-			}
+		var checked sql.NullTime
+		if err = rows.Scan(&d.ID, &d.Name, &d.IPAddress, &d.DeviceType, &d.MonitoringMode, &d.MonitoringProfile, &d.CheckIntervalSeconds, &d.Status, &checked); err != nil {
+			rows.Close()
+			return
+		}
+		if checked.Valid {
+			d.LastCheckedAt = &checked.Time
+		}
+		if d.LastCheckedAt == nil || time.Since(*d.LastCheckedAt) >= models.CheckCadence(d) {
+			devices = append(devices, d)
 		}
 	}
-
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return
+	}
+	rows.Close()
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 20)
-
-	for _, dev := range devicesToCheck {
+	for _, d := range devices {
 		wg.Add(1)
 		sem <- struct{}{}
-
-		go func(target models.Device) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			p.checkSingleDevice(target)
-		}(dev)
+		go func(d models.Device) { defer wg.Done(); defer func() { <-sem }(); p.checkSingleDevice(d) }(d)
 	}
-
 	wg.Wait()
 }
 
 func (p *Poller) checkSingleDevice(dev models.Device) {
-	var isOnline bool
-	var latency float64
-
-	isWeb := strings.EqualFold(dev.DeviceType, "website") ||
-		strings.EqualFold(dev.DeviceType, "web") ||
-		strings.EqualFold(dev.DeviceType, "http") ||
-		strings.HasPrefix(dev.IPAddress, "http://") ||
-		strings.HasPrefix(dev.IPAddress, "https://")
-
-	var statusCode int
-	var proto string
-	if isWeb {
-		isOnline, latency, statusCode, proto = checkWebsiteReachability(dev.IPAddress, 3*time.Second)
+	// Re-read policy before dispatch; never trust a stale caller's category/profile/target.
+	var checked sql.NullTime
+	err := database.DB.QueryRow(`SELECT name,ip_address,device_type,monitoring_mode,monitoring_profile,check_interval_seconds,status,last_checked_at FROM devices WHERE id=?`, dev.ID).Scan(&dev.Name, &dev.IPAddress, &dev.DeviceType, &dev.MonitoringMode, &dev.MonitoringProfile, &dev.CheckIntervalSeconds, &dev.Status, &checked)
+	if err != nil || dev.MonitoringProfile == "paused" || dev.MonitoringProfile == "maintenance" {
+		return
+	}
+	if checked.Valid && time.Since(checked.Time) < models.CheckCadence(dev) {
+		return
+	}
+	safe := dev
+	if err = models.NormalizeDevice(&safe); err != nil || safe.MonitoringMode != dev.MonitoringMode {
+		_, _ = database.DB.Exec(`UPDATE devices SET status='unknown',last_checked_at=CURRENT_TIMESTAMP,last_probe_latency_ms=NULL,probe_error='Geçersiz hedef veya izleme politikası' WHERE id=?`, dev.ID)
+		return
+	}
+	var online bool
+	var rtt *float64
+	httpResult := ""
+	if dev.MonitoringMode == models.ModeWebsite {
+		probe := p.websiteProbe
+		if probe == nil {
+			probe = checkWebsiteReachability
+		}
+		ok, latency, code, proto := probe(dev.IPAddress, 3*time.Second)
+		online = ok
+		if code > 0 {
+			rtt = &latency
+			httpResult = fmt.Sprintf("HTTP %d · %s", code, proto)
+		} else {
+			httpResult = "HTTP yanıtı alınamadı"
+		}
 	} else {
-		isOnline, latency = PingHost(dev.IPAddress, 1*time.Second)
+		probe := p.icmpProbe
+		if probe == nil {
+			probe = ProbeICMP
+		}
+		online, rtt, err = probe(dev.IPAddress, time.Second)
 	}
-
-	responseTime := int(latency)
-
-	newStatus := "offline"
-	if isOnline {
-		newStatus = "online"
+	if err != nil {
+		_, _ = database.DB.Exec(`UPDATE devices SET status='unknown',last_checked_at=CURRENT_TIMESTAMP,last_probe_latency_ms=NULL,probe_error='Yerel ICMP kontrolü çalıştırılamadı' WHERE id=? AND monitoring_profile NOT IN ('paused','maintenance') AND monitoring_mode=? AND ip_address=?`, dev.ID, dev.MonitoringMode, dev.IPAddress)
+		return
 	}
+	status := "offline"
+	if online {
+		status = "online"
+	}
+	if err = p.recordObservation(dev, status, rtt, httpResult); err != nil {
+		log.Printf("[Monitor] Observation persistence failed: %v", err)
+		return
+	}
+	if dev.MonitoringMode == models.ModeServer {
+		p.pollDeviceServices(dev.ID, dev.IPAddress)
+	}
+}
 
-	var notesUpdate string
-	if isWeb {
-		if statusCode > 0 {
-			notesUpdate = fmt.Sprintf("HTTP %d • %s", statusCode, proto)
+// A completed observation and its incident transition commit atomically.
+func (p *Poller) recordObservation(dev models.Device, status string, rtt *float64, httpResult string) error {
+	p.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			p.mu.Unlock()
+		}
+	}()
+	tx, err := database.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var previous, mode, profile, address string
+	if err = tx.QueryRow(`SELECT status,monitoring_mode,monitoring_profile,ip_address FROM devices WHERE id=?`, dev.ID).Scan(&previous, &mode, &profile, &address); err != nil {
+		return err
+	}
+	if mode != dev.MonitoringMode || address != dev.IPAddress || profile == "paused" || profile == "maintenance" {
+		return nil
+	}
+	response := 0
+	if rtt != nil {
+		response = int(*rtt)
+	}
+	_, err = tx.Exec(`UPDATE devices SET status=?,last_checked_at=CURRENT_TIMESTAMP,last_probe_latency_ms=?,probe_error='',http_result=?,response_time_ms=?,last_seen_at=CASE WHEN ?='online' THEN CURRENT_TIMESTAMP ELSE last_seen_at END,last_status_change_at=CASE WHEN status!=? THEN CURRENT_TIMESTAMP ELSE last_status_change_at END,updated_at=CURRENT_TIMESTAMP WHERE id=?`, status, rtt, httpResult, response, status, status, dev.ID)
+	if err != nil {
+		return err
+	}
+	event := ""
+	incidentID := 0
+	if status == "offline" && previous != "offline" {
+		var count int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM downtime_incidents WHERE device_id=? AND resolved_at IS NULL`, dev.ID).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			res, e := tx.Exec(`INSERT INTO downtime_incidents(device_id,started_at,classified_cause,auto_detection_hypothesis) VALUES(?,CURRENT_TIMESTAMP,'unclassified','İzleme yöntemiyle yanıt alınamadı; güç durumu doğrulanmadı')`, dev.ID)
+			if e != nil {
+				return e
+			}
+			id, _ := res.LastInsertId()
+			incidentID = int(id)
+			event = "DOWNTIME"
+		}
+	} else if status == "online" {
+		res, e := tx.Exec(`UPDATE downtime_incidents SET resolved_at=CURRENT_TIMESTAMP,duration_seconds=MAX(0,CAST(strftime('%s','now')-strftime('%s',started_at) AS INTEGER)) WHERE device_id=? AND resolved_at IS NULL`, dev.ID)
+		if e != nil {
+			return e
+		}
+		n, _ := res.RowsAffected()
+		if n > 0 {
+			event = "RECOVERY"
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	p.mu.Unlock()
+	locked = false
+	if event != "" {
+		if p.notify != nil {
+			p.notify(dev.Name, dev.IPAddress, event, "Erişilebilirlik durumu değişti")
 		} else {
-			notesUpdate = "Bağlantı Hatası"
+			if incidentID > 0 {
+				incident.EvaluateSimultaneousOutages(dev.ID, incidentID)
+			}
+			incident.DispatchAlert(dev.Name, dev.IPAddress, event, "Erişilebilirlik durumu değişti; donanım sağlığı ölçülmedi.")
 		}
 	}
-
-	// Check status transition
-	if dev.Status != newStatus {
-		if isWeb && notesUpdate != "" {
-			_, _ = database.DB.Exec(`UPDATE devices SET operator_notes = $1 WHERE id = $2`, notesUpdate, dev.ID)
-		}
-		p.handleStatusTransition(dev, newStatus, responseTime)
-	} else if isOnline {
-		// Update ping time and last seen
-		if isWeb && notesUpdate != "" {
-			_, _ = database.DB.Exec(`
-				UPDATE devices 
-				SET last_seen_at = CURRENT_TIMESTAMP, response_time_ms = $1, operator_notes = $2, updated_at = CURRENT_TIMESTAMP 
-				WHERE id = $3
-			`, responseTime, notesUpdate, dev.ID)
-		} else {
-			_, _ = database.DB.Exec(`
-				UPDATE devices 
-				SET last_seen_at = CURRENT_TIMESTAMP, response_time_ms = $1, updated_at = CURRENT_TIMESTAMP 
-				WHERE id = $2
-			`, responseTime, dev.ID)
-		}
-	} else if isWeb && notesUpdate != "" {
-		_, _ = database.DB.Exec(`UPDATE devices SET operator_notes = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, notesUpdate, dev.ID)
-	}
-
-	// Poll Monitored Services on this device
-	p.pollDeviceServices(dev.ID, dev.IPAddress)
+	return nil
 }
 
 func isDisallowedHostOrIP(hostStr string) bool {
-	h := strings.ToLower(strings.TrimSpace(hostStr))
-	if idx := strings.Index(h, "://"); idx != -1 {
-		h = h[idx+3:]
-	}
-	if slashIdx := strings.Index(h, "/"); slashIdx != -1 {
-		h = h[:slashIdx]
-	}
-	if colonIdx := strings.LastIndex(h, ":"); colonIdx != -1 && !strings.Contains(h[colonIdx:], "]") {
-		h = h[:colonIdx]
-	}
-	h = strings.Trim(h, "[]")
-
-	if h == "" || h == "metadata.google.internal" || h == "instance-data" || h == "169.254.169.254" {
-		return true
-	}
-
-	ips, err := net.LookupIP(h)
-	if err != nil {
-		ip := net.ParseIP(h)
-		if ip != nil {
-			ips = []net.IP{ip}
-		} else {
-			return false
-		}
-	}
-
-	for _, ip := range ips {
-		// Link-local unicast (169.254.0.0/16, fe80::/10) or multicast
-		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	h := strings.TrimSpace(strings.ToLower(hostStr))
+	if strings.Contains(h, "://") {
+		u, err := url.Parse(h)
+		if err != nil {
 			return true
 		}
-		// Explicitly block AWS/GCP/Azure/OpenStack metadata IP
-		if ip.Equal(net.ParseIP("169.254.169.254")) {
+		h = u.Hostname()
+	} else if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	h = strings.Trim(h, "[]")
+	if h == "" || h == "metadata.google.internal" || h == "instance-data" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	var ips []net.IP
+	if ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		resolved, err := net.LookupIP(h)
+		if err != nil {
+			return false
+		}
+		ips = resolved
+	}
+	for _, ip := range ips {
+		if ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() || ip.Equal(net.IPv4bcast) {
 			return true
 		}
 	}
@@ -280,80 +316,18 @@ func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, fl
 	return resp.StatusCode < 500, latencyMs, resp.StatusCode, proto
 }
 
-func (p *Poller) handleStatusTransition(dev models.Device, newStatus string, respTime int) {
-	log.Printf("[Monitor] Status changed for %s (%s): %s -> %s", dev.Name, dev.IPAddress, dev.Status, newStatus)
-
-	tx, err := database.DB.Begin()
-	if err != nil {
-		return
-	}
-	defer tx.Rollback()
-
-	if newStatus == "offline" {
-		// Device went down -> Record incident
-		_, _ = tx.Exec(`
-			UPDATE devices 
-			SET status = 'offline', last_status_change_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
-			WHERE id = $1
-		`, dev.ID)
-
-		var incidentID int
-		_ = tx.QueryRow(`
-			INSERT INTO downtime_incidents (device_id, started_at, classified_cause, auto_detection_hypothesis)
-			VALUES ($1, CURRENT_TIMESTAMP, 'unclassified', 'Lost network response')
-			RETURNING id
-		`, dev.ID).Scan(&incidentID)
-
-		if err := tx.Commit(); err == nil {
-			// Check correlation: Did multiple devices drop right now?
-			if incidentID > 0 {
-				incident.EvaluateSimultaneousOutages(dev.ID, incidentID)
-			}
-			incident.DispatchAlert(dev.Name, dev.IPAddress, "DOWNTIME", "Device stopped responding.")
-		}
-	} else if newStatus == "online" {
-		// Device recovered -> Close active incident
-		_, _ = tx.Exec(`
-			UPDATE devices 
-			SET status = 'online', last_seen_at = CURRENT_TIMESTAMP, last_status_change_at = CURRENT_TIMESTAMP, response_time_ms = $1, updated_at = CURRENT_TIMESTAMP 
-			WHERE id = $2
-		`, respTime, dev.ID)
-
-		// Find open incident
-		var incID int
-		var startedAt time.Time
-		err := tx.QueryRow(`
-			SELECT id, started_at FROM downtime_incidents 
-			WHERE device_id = $1 AND resolved_at IS NULL 
-			ORDER BY started_at DESC LIMIT 1
-		`, dev.ID).Scan(&incID, &startedAt)
-
-		if err == nil {
-			duration := int(time.Since(startedAt).Seconds())
-			_, _ = tx.Exec(`
-				UPDATE downtime_incidents 
-				SET resolved_at = CURRENT_TIMESTAMP, duration_seconds = $1 
-				WHERE id = $2
-			`, duration, incID)
-		}
-
-		if err := tx.Commit(); err == nil {
-			incident.DispatchAlert(dev.Name, dev.IPAddress, "RECOVERY", fmt.Sprintf("Device recovered and is online (Latency: %dms).", respTime))
-		}
-	}
-}
-
 func (p *Poller) pollDeviceServices(deviceID int, ipAddress string) {
 	rows, err := database.DB.Query(`
 		SELECT id, name, check_type, target_port, target_path, expected_status_code
 		FROM services_monitored
-		WHERE device_id = $1
+		WHERE device_id = $1 AND EXISTS (SELECT 1 FROM devices WHERE id=$1 AND monitoring_mode='server' AND monitoring_profile NOT IN ('paused','maintenance'))
 	`, deviceID)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
+	var services []models.ServiceMonitored
 	for rows.Next() {
 		var s models.ServiceMonitored
 		var targetPath sql.NullString
@@ -364,18 +338,30 @@ func (p *Poller) pollDeviceServices(deviceID int, ipAddress string) {
 			s.TargetPath = targetPath.String
 		}
 
-		go checkSingleService(s, ipAddress)
+		services = append(services, s)
+	}
+	rows.Close()
+	for _, s := range services {
+		if p.serviceProbe != nil {
+			p.serviceProbe(s, ipAddress)
+		} else {
+			checkSingleService(s, ipAddress)
+		}
 	}
 }
 
 func checkSingleService(s models.ServiceMonitored, ip string) {
+	var allowed int
+	if database.DB.QueryRow(`SELECT COUNT(*) FROM services_monitored s JOIN devices d ON d.id=s.device_id WHERE s.id=? AND d.monitoring_mode='server' AND d.monitoring_profile NOT IN ('paused','maintenance') AND d.ip_address=?`, s.ID, ip).Scan(&allowed) != nil || allowed != 1 {
+		return
+	}
 	startTime := time.Now()
 	serviceStatus := "offline"
 	respTime := 0
 
 	switch s.CheckType {
 	case "tcp_port":
-		addr := fmt.Sprintf("%s:%d", ip, s.TargetPort)
+		addr := net.JoinHostPort(ip, strconv.Itoa(s.TargetPort))
 		conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
 		if err == nil {
 			_ = conn.Close()
@@ -384,7 +370,7 @@ func checkSingleService(s models.ServiceMonitored, ip string) {
 		}
 	case "http":
 		url := fmt.Sprintf("http://%s:%d%s", ip, s.TargetPort, s.TargetPath)
-		client := http.Client{Timeout: 2 * time.Second}
+		client := http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 		resp, err := client.Get(url)
 		if err == nil {
 			_ = resp.Body.Close()

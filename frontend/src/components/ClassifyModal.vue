@@ -5,7 +5,7 @@
       <div class="p-4 border-b border-[#232936] flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="material-symbols-outlined text-amber-400">report_problem</span>
-          <h3 class="text-sm font-semibold text-white">Kesinti Sınıflandırma (Post-Mortem)</h3>
+          <h3 class="text-sm font-semibold text-white">Kesinti Sınıflandırma</h3>
         </div>
         <button @click="$emit('close')" class="text-txt-muted hover:text-white">
           <span class="material-symbols-outlined text-[20px]">close</span>
@@ -20,7 +20,7 @@
             <span class="font-mono text-txt-secondary">{{ formatDate(incident.started_at) }}</span>
           </div>
           <span v-if="incident.auto_detection_hypothesis" class="text-amber-400">
-            Otomatik Tespit: {{ incident.auto_detection_hypothesis }}
+            Otomatik Hipotez: {{ incident.auto_detection_hypothesis }}
           </span>
         </div>
 
@@ -79,20 +79,20 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'classified'])
 
-const selectedCause = ref('power_outage')
+const selectedCause = ref('network_failure')
 const notes = ref('')
 const isSubmitting = ref(false)
 
 const causes = [
   { id: 'power_outage', label: 'Şebeke / Elektrik', icon: 'bolt' },
-  { id: 'maintenance', label: 'Planlı Bakım', icon: 'build' },
-  { id: 'hardware_crash', label: 'Donanım / Çökme', icon: 'memory' },
-  { id: 'network_issue', label: 'Ağ / Kablo', icon: 'lan' }
+  { id: 'planned_maintenance', label: 'Planlı Bakım', icon: 'build' },
+  { id: 'system_crash', label: 'Donanım / Çökme', icon: 'memory' },
+  { id: 'network_failure', label: 'Ağ / Kablo', icon: 'lan' }
 ]
 
 watch(() => props.incident, (inc) => {
   if (inc) {
-    selectedCause.value = inc.classified_cause === 'unclassified' ? 'power_outage' : inc.classified_cause
+    selectedCause.value = inc.classified_cause === 'unclassified' ? 'network_failure' : inc.classified_cause
     notes.value = inc.operator_notes || ''
   }
 }, { immediate: true })
@@ -102,13 +102,13 @@ const submitClassification = async () => {
   isSubmitting.value = true
   try {
     await api.classifyIncident(props.incident.id, {
-      cause: selectedCause.value,
-      notes: notes.value
+      classified_cause: selectedCause.value,
+      operator_notes: notes.value
     })
     emit('classified')
     emit('close')
   } catch (err) {
-    alert('Sınıflandırma hatası: ' + (err.response?.data?.error || err.message))
+    alert('Sınıflandırma hatası: ' + (err.response?.data?.error || 'İşlem tamamlanamadı'))
   } finally {
     isSubmitting.value = false
   }

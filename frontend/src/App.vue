@@ -1,1064 +1,611 @@
+<script setup>
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from "vue";
+import api from "./services/api";
+import { sections, stateLabels, typeLabels, categoryView, categoryLabel, observation, dateTime, apiError, telemetryCurrent, nasType } from "./devicePolicy";
+import TopBar from "./components/TopBar.vue";
+import Sidebar from "./components/Sidebar.vue";
+import ServerTable from "./components/ServerTable.vue";
+import WebsiteTable from "./components/WebsiteTable.vue";
+import IpDeviceTable from "./components/IpDeviceTable.vue";
+import TelemetryInspector from "./components/TelemetryInspector.vue";
+import AddDeviceModal from "./components/AddDeviceModal.vue";
+import AgentModal from "./components/AgentModal.vue";
+import ClassifyModal from "./components/ClassifyModal.vue";
+import SettingsModal from "./components/SettingsModal.vue";
+import LoginModal from "./components/LoginModal.vue";
+import ChangePasswordModal from "./components/ChangePasswordModal.vue";
+const currentView = ref("overview");
+const devices = ref([]);
+const incidents = ref([]);
+const stats = ref({});
+const loading = ref(false);
+const loaded = ref(false);
+const fetchError = ref("");
+const actionError = ref("");
+const message = ref("");
+const lastRefresh = ref("");
+const clock = ref(Date.now());
+const loginOpen = ref(true);
+const passwordOpen = ref(false);
+const passwordForced = ref(false);
+const settingsOpen = ref(false);
+const agentOpen = ref(false);
+const chooserOpen = ref(false);
+const addOpen = ref(false);
+const editTarget = ref(null);
+const initialMode = ref("icmp");
+const classifyTarget = ref(null);
+const gateway = ref(null);
+const gatewayLoading = ref(false);
+const gatewayError = ref("");
+const selectedID = ref(null);
+const selectedMetrics = ref([]);
+const metricsLoading = ref(false);
+const metricsError = ref("");
+const backupBusy = ref(false);
+const filters = reactive(Object.fromEntries(sections.map((s) => [s.id, { query: "", status: "", type: "", page: 1 }])));
+const incidentFilter = reactive({ device: "", category: "", state: "" });
+const categorySections = sections.filter((s) => s.mode);
+const viewInfo = computed(() => sections.find((s) => s.id === currentView.value) || sections[0]);
+const filter = computed(() => filters[currentView.value]);
+const pageSize = 20;
+const inCategory = (mode) => devices.value.filter((d) => d.monitoring_mode === mode);
+const counts = computed(() => Object.fromEntries(categorySections.map((s) => [s.mode, inCategory(s.mode).length])));
+const deviceState = (d) => observation(d, clock.value);
+const statusCounts = computed(() => Object.fromEntries(Object.keys(stateLabels).map((s) => [s, devices.value.filter((d) => deviceState(d) === s).length])));
+const observedCount = computed(() => statusCounts.value.online + statusCounts.value.offline);
+const reachability = computed(() => observedCount.value ? (100 * statusCounts.value.online / observedCount.value).toLocaleString("tr-TR", { maximumFractionDigits: 1 }) + " %" : "\u2014");
+const categoryStats = (mode) => {
+  const list = inCategory(mode);
+  return { total: list.length, online: list.filter((d) => deviceState(d) === "online").length, offline: list.filter((d) => deviceState(d) === "offline").length, other: list.filter((d) => !["online", "offline"].includes(deviceState(d))).length };
+};
+const installedCount = computed(() => inCategory("server").filter((d) => d.is_agent_installed).length);
+const freshServers = computed(() => inCategory("server").filter((d) => telemetryCurrent(d, clock.value)));
+const currentDevices = computed(() => inCategory(viewInfo.value.mode));
+const inventoryTypes = computed(() => [...new Set(currentDevices.value.map((d) => d.device_type))].sort());
+const filteredDevices = computed(() => currentDevices.value.filter((d) => (!filter.value.query || [d.name, d.ip_address, d.location, typeLabels[d.device_type] || d.device_type].some((v) => String(v || "").toLocaleLowerCase("tr-TR").includes(filter.value.query.toLocaleLowerCase("tr-TR")))) && (!filter.value.status || deviceState(d) === filter.value.status) && (!filter.value.type || (filter.value.type === "__nas" ? nasType(d.device_type) : currentView.value === "devices" && filter.value.type === "linux" ? d.device_type !== "windows" : d.device_type === filter.value.type))));
+const pages = computed(() => Math.max(1, Math.ceil(filteredDevices.value.length / pageSize)));
+const pageDevices = computed(() => filteredDevices.value.slice((filter.value.page - 1) * pageSize, filter.value.page * pageSize));
+const selectedDevice = computed(() => currentView.value === "devices" ? devices.value.find((d) => d.id === selectedID.value && d.monitoring_mode === "server") : null);
+const deviceFor = (id) => devices.value.find((d) => d.id === id);
+const activeIncidents = computed(() => incidents.value.filter((i) => !i.resolved_at));
+const filteredIncidents = computed(() => incidents.value.filter((i) => {
+  const d = deviceFor(i.device_id);
+  const q = filter.value.query.toLocaleLowerCase("tr-TR");
+  return (!incidentFilter.device || i.device_id === Number(incidentFilter.device)) && (!incidentFilter.category || d?.monitoring_mode === incidentFilter.category) && (!incidentFilter.state || (incidentFilter.state === "open" ? !i.resolved_at : !!i.resolved_at)) && (!q || [i.device_name, d?.name, d?.ip_address].some((v) => String(v || "").toLocaleLowerCase("tr-TR").includes(q)));
+}));
+const causeLabel = (cause) => ({ unclassified: "S\u0131n\u0131fland\u0131r\u0131lmad\u0131", power_outage: "Elektrik Kesintisi", maintenance: "Planl\u0131 Bak\u0131m", planned_maintenance: "Planl\u0131 Bak\u0131m", hardware_crash: "Donan\u0131m / \xC7\xF6kme", system_crash: "Sistem \xC7\xF6kmesi", network_issue: "A\u011F Sorunu", network_failure: "A\u011F Sorunu" })[cause] || "Di\u011Fer";
+const duration = (i) => {
+  const sec = i.duration_seconds ?? Math.max(0, Math.floor((clock.value - Date.parse(i.started_at)) / 1e3));
+  return sec >= 3600 ? Math.floor(sec / 3600) + " sa " + Math.floor(sec % 3600 / 60) + " dk" : sec >= 60 ? Math.floor(sec / 60) + " dk " + sec % 60 + " sn" : sec + " sn";
+};
+let timer, clockTimer, authEpoch = 0, metricsEpoch = 0;
+watch(currentView, () => {
+  agentOpen.value = false;
+  selectedID.value = null;
+  selectedMetrics.value = [];
+  metricsEpoch++;
+  addOpen.value = false;
+  editTarget.value = null;
+  chooserOpen.value = false;
+});
+watch(() => [filter.value.query, filter.value.status, filter.value.type], () => {
+  filter.value.page = 1;
+});
+watch(pages, (n) => {
+  if (filter.value.page > n) filter.value.page = n;
+});
+function navigate(view) {
+  if (view === "nas") {
+    currentView.value = "ip-devices";
+    filters["ip-devices"].type = "__nas";
+  } else if (sections.some((s) => s.id === view)) currentView.value = view;
+}
+function openAdd(mode) {
+  initialMode.value = mode;
+  editTarget.value = null;
+  chooserOpen.value = false;
+  addOpen.value = true;
+}
+function editDevice(d) {
+  initialMode.value = d.monitoring_mode;
+  editTarget.value = d;
+  addOpen.value = true;
+}
+function showIncidents(d) {
+  navigate("incidents");
+  incidentFilter.device = String(d.id);
+  incidentFilter.category = "";
+  incidentFilter.state = "";
+}
+function openIncidentDevice(i) {
+  const d = deviceFor(i.device_id);
+  if (d) {
+    navigate(categoryView(d));
+    filters[currentView.value].query = d.ip_address;
+    filters[currentView.value].type = "";
+    filters[currentView.value].status = "";
+  }
+}
+async function refresh() {
+  if (loading.value || loginOpen.value || passwordForced.value) return;
+  loading.value = true;
+  fetchError.value = "";
+  const epoch = authEpoch;
+  try {
+    const [d, i, s] = await Promise.all([api.getDevices(), api.getIncidents(), api.getDashboardStats()]);
+    if (epoch !== authEpoch) return;
+    devices.value = d;
+    incidents.value = i;
+    stats.value = s;
+    loaded.value = true;
+    lastRefresh.value = (/* @__PURE__ */ new Date()).toLocaleTimeString("tr-TR");
+    clock.value = Date.now();
+    if (selectedDevice.value) loadMetrics(selectedDevice.value);
+  } catch (e) {
+    if (epoch === authEpoch) fetchError.value = apiError(e, "Veriler yenilenemedi. \xD6nceki kay\u0131tlar g\xF6steriliyor; son veri zaman\u0131n\u0131 kontrol edin.");
+  } finally {
+    loading.value = false;
+  }
+}
+async function loadMetrics(d) {
+  if (currentView.value !== "devices" || d.monitoring_mode !== "server") return;
+  const epoch = ++metricsEpoch;
+  selectedID.value = d.id;
+  selectedMetrics.value = [];
+  metricsError.value = "";
+  metricsLoading.value = true;
+  try {
+    const res = await api.getDeviceTelemetry(d.id);
+    if (epoch === metricsEpoch) selectedMetrics.value = res.metrics || [];
+  } catch (e) {
+    if (epoch === metricsEpoch) metricsError.value = apiError(e);
+  } finally {
+    if (epoch === metricsEpoch) metricsLoading.value = false;
+  }
+}
+async function runAction(fn, success) {
+  actionError.value = "";
+  message.value = "";
+  try {
+    await fn();
+    message.value = success;
+    await refresh();
+  } catch (e) {
+    actionError.value = apiError(e);
+  }
+}
+function deleteDevice(d) {
+  if (confirm(d.name + " kayd\u0131, telemetrisi ve olay ge\xE7mi\u015Fi silinsin mi?")) runAction(() => api.deleteDevice(d.id), "Cihaz silindi.");
+}
+function toggleProfile(d) {
+  runAction(() => api.updateDevice(d.id, { monitoring_profile: ["paused", "maintenance"].includes(d.monitoring_profile) ? "active" : "maintenance" }), "\u0130zleme profili g\xFCncellendi.");
+}
+function upgrade(d) {
+  if (currentView.value !== "devices" || d.monitoring_mode !== "server") return;
+  if (confirm(d.name + " ajan\u0131na g\xFCncelleme talimat\u0131 g\xF6nderilsin mi?")) runAction(() => api.upgradeAgent(d.id), "G\xFCncelleme talimat\u0131 kuyru\u011Fa al\u0131nd\u0131.");
+}
+function upgradeAll() {
+  if (currentView.value === "devices" && confirm("Kay\u0131tl\u0131 Windows/Linux ajanlar\u0131na g\xFCncelleme talimat\u0131 g\xF6nderilsin mi?")) runAction(() => api.upgradeAllAgents(), "Toplu g\xFCncelleme talimat\u0131 kuyru\u011Fa al\u0131nd\u0131.");
+}
+async function saved(mode) {
+  navigate(categorySections.find((s) => s.mode === mode)?.id || "ip-devices");
+  await refresh();
+}
+function authFailed() {
+  authEpoch++;
+  metricsEpoch++;
+  loginOpen.value = true;
+  devices.value = [];
+  incidents.value = [];
+  stats.value = {};
+  loaded.value = false;
+  lastRefresh.value = "";
+  agentOpen.value = false;
+  settingsOpen.value = false;
+  addOpen.value = false;
+  chooserOpen.value = false;
+  classifyTarget.value = null;
+  selectedID.value = null;
+  selectedMetrics.value = [];
+  passwordOpen.value = false;
+  passwordForced.value = false;
+}
+function forcePassword() {
+  passwordForced.value = true;
+  passwordOpen.value = true;
+  agentOpen.value = false;
+}
+function loggedIn(data) {
+  loginOpen.value = false;
+  if (data?.must_change_password) forcePassword();
+  else refresh();
+}
+async function passwordChanged() {
+  passwordForced.value = false;
+  passwordOpen.value = false;
+  await refresh();
+}
+async function checkGateway() {
+  if (gatewayLoading.value) return;
+  gatewayLoading.value = true;
+  gatewayError.value = "";
+  try {
+    gateway.value = await api.getGatewayHealth();
+  } catch (e) {
+    gateway.value = null;
+    gatewayError.value = apiError(e);
+  } finally {
+    gatewayLoading.value = false;
+  }
+}
+async function downloadBackup() {
+  backupBusy.value = true;
+  try {
+    const bundle = await api.exportBackup();
+    const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "gnnwatchtower-backup-" + (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) + ".json";
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    actionError.value = apiError(e);
+  } finally {
+    backupBusy.value = false;
+  }
+}
+async function restoreBackup(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) {
+    actionError.value = "Yedek dosyas\u0131 2 MB s\u0131n\u0131r\u0131n\u0131 a\u015F\u0131yor.";
+    e.target.value = "";
+    return;
+  }
+  if (!confirm("Yedekteki ayar ve kay\u0131tlar mevcut yap\u0131land\u0131rmaya uygulans\u0131n m\u0131?")) {
+    e.target.value = "";
+    return;
+  }
+  backupBusy.value = true;
+  try {
+    const data = JSON.parse(await file.text());
+    await api.importBackup(data);
+    message.value = "Yedek geri y\xFCklendi. Yeni hedeflerin ilk kontrol\xFC bekleniyor.";
+    await refresh();
+  } catch (err) {
+    actionError.value = apiError(err, "Yedek okunamad\u0131 veya geri y\xFCklenemedi. JSON bi\xE7imini kontrol edin.");
+  } finally {
+    backupBusy.value = false;
+    e.target.value = "";
+  }
+}
+onMounted(async () => {
+  window.addEventListener("gnn-auth-failed", authFailed);
+  window.addEventListener("gnn-must-change-password", forcePassword);
+  if (localStorage.getItem("gnn_token")) {
+    try {
+      const me = await api.getMe();
+      loggedIn(me);
+    } catch (e) {
+      if (e.response?.data?.must_change_password) {
+        loginOpen.value = false;
+        forcePassword();
+      } else authFailed();
+    }
+  }
+  timer = setInterval(refresh, 1e4);
+  clockTimer = setInterval(() => {
+    clock.value = Date.now();
+  }, 1e3);
+});
+onUnmounted(() => {
+  clearInterval(timer);
+  clearInterval(clockTimer);
+  authEpoch++;
+  metricsEpoch++;
+  window.removeEventListener("gnn-auth-failed", authFailed);
+  window.removeEventListener("gnn-must-change-password", forcePassword);
+});
+</script>
+
 <template>
-  <div class="min-h-screen bg-canvas text-txt-primary flex flex-col antialiased select-text">
-    <!-- Top Bar Component -->
-    <TopBar 
-      :stats="stats" 
-      :gateway="gateway"
-      v-model:searchQuery="searchQuery" 
-      :isRefreshing="isRefreshing"
-      @refresh="fetchData"
-      @open-incidents="openIncidentsView"
-      @open-settings="isSettingsOpen = true"
-      @open-change-password="isChangePasswordOpen = true"
-      @logout="handleLogout"
-    />
-
-    <!-- Left Navigation Rail -->
-    <Sidebar 
-      :currentView="currentView"
-      :gateway="gateway"
-      :websiteCount="websiteDevices.length"
-      @select-view="currentView = $event"
-      @open-discovery="isDiscoveryOpen = true"
-      @open-agent-modal="isAgentOpen = true"
-      @open-settings="isSettingsOpen = true"
-    />
-
-    <!-- Main Content Area -->
-    <div class="pl-60 pt-14 flex-1 flex flex-col">
-      <main class="p-8 max-w-[1600px] w-full mx-auto flex flex-col gap-6 flex-1">
-        <!-- Top Breadcrumb & Actions Bar -->
-        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-[#232936]">
-          <div class="flex flex-col gap-1.5">
-            <div class="flex items-center gap-2 text-xs text-txt-muted">
-              <span>{{ stats.client_company_name || 'Müşteri Altyapısı' }}</span>
-              <span class="text-[#2c3547]">/</span>
-              <span>{{ stats.client_location || 'Sistem Odası' }}</span>
-              <span class="text-[#2c3547]">/</span>
-              <span class="text-txt-primary font-medium">GNNwatchtower Appliance</span>
-              <span 
-                class="px-1.5 py-0.2 rounded text-[11px] font-medium border"
-                :class="(stats.offline_devices || 0) === 0 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'"
-              >
-                {{ (stats.offline_devices || 0) === 0 ? 'Tüm Sistemler Sağlıklı' : (stats.offline_devices + ' Kesinti Mevcut') }}
-              </span>
-            </div>
-
-            <div class="flex items-center gap-3 text-xs text-txt-secondary flex-wrap">
-              <span class="flex items-center gap-1.5">
-                <span class="text-txt-muted">Aktif Profiller:</span>
-                <span class="text-txt-primary font-mono">{{ stats.active_profiles || 0 }}</span>
-              </span>
-              <span class="text-[#232936]">•</span>
-              <span class="flex items-center gap-1.5">
-                <span class="text-txt-muted">Uyku Modu (24h/30d):</span>
-                <span class="text-txt-primary font-mono">{{ stats.dormant_profiles || 0 }}</span>
-              </span>
-              <span class="text-[#232936]">•</span>
-              <span class="flex items-center gap-1.5">
-                <span class="text-txt-muted">Bakım Modu:</span>
-                <span class="text-txt-primary font-mono">{{ stats.maintenance_profiles || 0 }}</span>
-              </span>
-            </div>
+  <div class="wt-app">
+    <TopBar :last-refresh="lastRefresh" :refreshing="loading" @refresh="refresh" @add-device="chooserOpen=true" @change-password="passwordOpen=true" @logout="api.logout()" />
+    <Sidebar :current-view="currentView" :counts="counts" @select-view="navigate" @open-settings="settingsOpen=true" />
+    <main class="wt-main">
+      <header class="wt-page-heading">
+        <div>
+          <p class="wt-eyebrow">
+            {{ stats.client_company_name || 'ALTYAPI İZLEME' }}
+            <span v-if="stats.client_location"> · {{ stats.client_location }}</span>
+          </p>
+          <h1>{{ viewInfo.label }}</h1>
+          <p class="wt-muted">{{ ({overview:'Erişilebilirlik ve telemetri kapsamını birlikte takip edin.',devices:'Windows ve Linux envanteri; ajan kurulumu, erişilebilirlik ve güncel örnekler.',websites:'HTTP(S) yanıtları üzerinden web sitesi erişilebilirliği.', 'ip-devices':'NAS, ESXi ve ağ cihazları için yalnızca ICMP erişilebilirliği.',incidents:'Kaydedilmiş erişim kesintileri, geri dönüşler ve operatör değerlendirmeleri.',backups:'Yapılandırma, envanter ve olay kayıtlarını dışa aktarın veya geri yükleyin.'})[currentView] }}</p>
+        </div>
+        <div class="wt-toolbar">
+          <template v-if="currentView==='devices'">
+            <button @click="agentOpen=true">Ajan Dağıtımı</button>
+            <button v-if="installedCount" @click="upgradeAll">Ajanları Güncelle</button>
+          </template>
+          <button v-if="viewInfo.mode" class="wt-primary" @click="openAdd(viewInfo.mode)">{{ currentView==='websites' ? 'Web Sitesi Ekle' : currentView==='ip-devices' ? 'IP Cihazı Ekle' : 'Cihaz Ekle' }}</button>
+        </div>
+      </header>
+      <div v-if="fetchError" class="wt-error" role="alert">
+        {{ fetchError }}
+        <button @click="refresh">Yeniden Dene</button>
+      </div>
+      <div v-if="actionError" class="wt-error" role="alert">
+        {{ actionError }}
+        <button @click="actionError=''" aria-label="Uyarıyı kapat">×</button>
+      </div>
+      <div v-if="message" class="wt-notice" role="status">
+        {{ message }}
+        <button @click="message=''" aria-label="Bildirimi kapat">×</button>
+      </div>
+      <p v-if="loading && !loaded" class="wt-empty" role="status">Kayıtlar yükleniyor…</p>
+      <template v-if="currentView==='overview' && loaded">
+        <div class="wt-kpis">
+          <section class="wt-panel">
+            <span>Toplam Kayıt</span>
+            <strong>{{ devices.length }}</strong>
+            <small>Üç ayrı izleme kategorisi</small>
+          </section>
+          <section class="wt-panel">
+            <span>Güncel Erişilebilirlik</span>
+            <strong>{{ reachability }}</strong>
+            <small>{{ observedCount }} güncel gözlem · geçmiş SLA değildir</small>
+          </section>
+          <section class="wt-panel">
+            <span>Ulaşılamayan</span>
+            <strong class="wt-rose">{{ statusCounts.offline }}</strong>
+            <small>Güncel başarısız kontroller</small>
+          </section>
+          <section class="wt-panel">
+            <span>Güncel Ajan Verisi</span>
+            <strong>
+              {{ freshServers.length }}
+              <em>/ {{ installedCount }}</em>
+            </strong>
+            <small>Kayıtlı ajanlardan güncel rapor verenler</small>
+          </section>
+        </div>
+        <div class="wt-summary-strip wt-panel">
+          <span v-for="(label,state) in stateLabels" :key="state">
+            {{ label }}
+            <strong>{{ statusCounts[state] }}</strong>
+          </span>
+        </div>
+        <div class="wt-category-grid">
+          <button v-for="s in categorySections" :key="s.id" class="wt-panel wt-category" @click="navigate(s.id)">
+            <span class="material-symbols-outlined">{{ s.icon }}</span>
+            <h2>{{ s.label }}</h2>
+            <strong>{{ categoryStats(s.mode).total }}</strong>
+            <p>
+              <span class="wt-green">{{ categoryStats(s.mode).online }} erişilebilir</span>
+              ·
+              <span class="wt-rose">{{ categoryStats(s.mode).offline }} ulaşılamıyor</span>
+            </p>
+            <small>{{ categoryStats(s.mode).other }} kontrol bekliyor, güncel değil veya askıda</small>
+            <small v-if="s.mode==='server'">{{ installedCount }} ajan kayıtlı · {{ counts.server-installedCount }} ajan bekliyor</small>
+          </button>
+        </div>
+        <section class="wt-panel">
+          <header class="wt-panel-heading">
+            <h2>
+              Açık Olaylar
+              <small>{{ activeIncidents.length }}</small>
+            </h2>
+            <button @click="navigate('incidents')">Olay Günlüğü</button>
+          </header>
+          <p class="wt-muted">Son 200 kayıt içindeki açık olaylar. Bir kesinti kaydı, cihazın güç kaybını veya disk arızasını kanıtlamaz.</p>
+          <div v-if="activeIncidents.length" class="wt-table-scroll">
+            <table class="wt-table">
+              <thead>
+                <tr>
+                  <th>Cihaz</th>
+                  <th>Kategori</th>
+                  <th>Hedef</th>
+                  <th>Başlangıç</th>
+                  <th>Süre</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="i in activeIncidents.slice(0,10)" :key="i.id">
+                  <td>
+                    <button class="wt-link" @click="openIncidentDevice(i)">{{ i.device_name || deviceFor(i.device_id)?.name }}</button>
+                  </td>
+                  <td>{{ categoryLabel(deviceFor(i.device_id)) }}</td>
+                  <td class="wt-mono">{{ deviceFor(i.device_id)?.ip_address || '—' }}</td>
+                  <td>{{ dateTime(i.started_at) }}</td>
+                  <td>{{ duration(i) }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-
-          <!-- Top Quick Actions -->
-          <div class="flex items-center gap-2 self-start lg:self-center">
-            <button 
-              @click="isDiscoveryOpen = true"
-              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white transition-colors shadow-sm"
-            >
-              <span class="material-symbols-outlined text-[16px]">radar</span>
-              <span>Ağ Taraması Başlat</span>
-            </button>
-            <button 
-              @click="isAgentOpen = true"
-              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-[#141820] hover:bg-[#1d2432] text-txt-primary border border-[#232936] transition-colors"
-            >
-              <span class="material-symbols-outlined text-[16px] text-emerald-400">terminal</span>
-              <span>Ajan Dağıtımı</span>
-            </button>
-            <button 
-              @click="openAddDeviceModal"
-              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-[#141820] hover:bg-[#1d2432] text-txt-primary border border-[#232936] transition-colors"
-            >
-              <span class="material-symbols-outlined text-[16px] text-txt-muted">add</span>
-              <span>Manuel Cihaz</span>
-            </button>
+          <p v-else class="wt-empty">Görüntülenen kayıtlarda açık olay yok.</p>
+        </section>
+        <section class="wt-panel">
+          <header class="wt-panel-heading">
+            <h2>Ağ Geçidi · ICMP</h2>
+            <button :disabled="gatewayLoading" @click="checkGateway">{{ gatewayLoading ? 'Kontrol Ediliyor…' : 'Kontrol Et' }}</button>
+          </header>
+          <p v-if="gateway" class="wt-muted">
+            {{ gateway.ip || 'Ağ geçidi yapılandırılmamış' }}
+            ·
+            {{ gateway.status==='online' ? 'Erişilebilir' : gateway.status==='offline' ? 'Ulaşılamıyor' : 'Kontrol Edilemedi' }}
+            <span v-if="gateway.status==='online' && gateway.latency_ms != null"> · {{ gateway.latency_ms }} ms</span>
+            <small> · Son manuel kontrol; donanım sağlığı değildir.</small>
+          </p>
+          <p v-else class="wt-muted">{{ gatewayError || 'Ayarlar bölümünde tanımlı ağ geçidi, düğmeye basıldığında bir kez kontrol edilir.' }}</p>
+        </section>
+        <section class="wt-panel">
+          <h2>Telemetri Kapsamı</h2>
+          <p class="wt-muted">Güncel CPU, bellek ve disk doluluğu yalnızca Ajan Özeti içindeki gerçek ajan raporlarından gelir. CPU sıcaklığı ortam sıcaklığı değildir. IP cihazlarında disk, RAID ve güç sağlığı ölçülmez.</p>
+          <button @click="navigate('devices')">Ajan Özeti’ni Aç</button>
+        </section>
+      </template>
+      <template v-if="viewInfo.mode && loaded">
+        <div v-if="currentView==='ip-devices'" class="wt-notice wt-security">
+          <span class="material-symbols-outlined">shield</span>
+          <div>
+            <strong>Ek yönetim servisi açmadan, yalnızca ICMP ping ile izleme</strong>
+            <p>Bu kategoride SNMP, cihaz API’leri, SSH ve ajan kullanılmaz; mevcut servisler etkinleştirilmez. Disk, RAID, CPU ve bellek sağlığı toplanmaz. Ping yanıtı alınamaması ağ kesintisi veya ICMP filtrelemesinden kaynaklanabilir; cihazın kapalı olduğunu tek başına kanıtlamaz.</p>
           </div>
         </div>
-
-        <!-- VIEW 1: Overview (Admin Executive Dashboard) -->
-        <template v-if="currentView === 'overview'">
-          <!-- Top Executive Metrics Grid -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <!-- Card 1: Total Nodes -->
-            <div 
-              @click="currentView = 'devices'"
-              class="p-4 rounded-lg bg-[#141820] border border-[#232936] hover:border-blue-500/50 cursor-pointer transition-colors flex flex-col gap-2 group"
-            >
-              <div class="flex items-center justify-between text-xs text-txt-muted">
-                <span>Toplam İzlenen Düğüm</span>
-                <span class="material-symbols-outlined text-[18px] text-blue-400 group-hover:translate-x-0.5 transition-transform">dns</span>
-              </div>
-              <div class="flex items-baseline gap-2">
-                <span class="text-3xl font-mono font-semibold text-white">{{ devices.length }}</span>
-                <span class="text-xs text-blue-400 font-medium">Cihaz</span>
-              </div>
-              <span class="text-[11px] text-txt-muted flex items-center gap-1">
-                <span>Tüm envanteri listele</span>
-                <span class="material-symbols-outlined text-[13px]">arrow_forward</span>
-              </span>
-            </div>
-
-            <!-- Card 2: Online Nodes -->
-            <div class="p-4 rounded-lg bg-[#141820] border border-[#232936] flex flex-col gap-2">
-              <div class="flex items-center justify-between text-xs text-txt-muted">
-                <span>Çevrimiçi Düğümler</span>
-                <span class="material-symbols-outlined text-[18px] text-emerald-400">check_circle</span>
-              </div>
-              <div class="flex items-baseline gap-2">
-                <span class="text-3xl font-mono font-semibold text-emerald-400">{{ onlineDevicesCount }}</span>
-                <span class="text-xs text-txt-muted">/ {{ devices.length }}</span>
-              </div>
-              <div class="w-full bg-[#0c0e12] rounded-full h-1.5 overflow-hidden">
-                <div 
-                  class="bg-emerald-500 h-full rounded-full transition-all duration-500"
-                  :style="{ width: devices.length > 0 ? (onlineDevicesCount / devices.length * 100) + '%' : '0%' }"
-                ></div>
-              </div>
-            </div>
-
-            <!-- Card 3: Offline / Alerts -->
-            <div class="p-4 rounded-lg bg-[#141820] border border-[#232936] flex flex-col gap-2">
-              <div class="flex items-center justify-between text-xs text-txt-muted">
-                <span>Kesintideki Cihazlar</span>
-                <span 
-                  class="material-symbols-outlined text-[18px]"
-                  :class="offlineDevices.length > 0 ? 'text-rose-400 animate-pulse' : 'text-txt-muted'"
-                >error</span>
-              </div>
-              <div class="flex items-baseline gap-2">
-                <span 
-                  class="text-3xl font-mono font-semibold"
-                  :class="offlineDevices.length > 0 ? 'text-rose-400' : 'text-txt-primary'"
-                >{{ offlineDevices.length }}</span>
-                <span class="text-xs text-txt-muted">Aktif Alarm</span>
-              </div>
-              <span 
-                class="text-[11px] font-medium"
-                :class="offlineDevices.length === 0 ? 'text-emerald-400' : 'text-rose-400'"
-              >
-                {{ offlineDevices.length === 0 ? '✓ Kritik kesinti bulunmuyor' : 'Müdahale gerekiyor' }}
-              </span>
-            </div>
-
-            <!-- Card 4: Agent Deployments -->
-            <div class="p-4 rounded-lg bg-[#141820] border border-[#232936] flex flex-col gap-2">
-              <div class="flex items-center justify-between text-xs text-txt-muted">
-                <span>Mini-Ajan Yüklü</span>
-                <span class="material-symbols-outlined text-[18px] text-cyan-400">terminal</span>
-              </div>
-              <div class="flex items-baseline gap-2">
-                <span class="text-3xl font-mono font-semibold text-cyan-400">{{ agentInstalledCount }}</span>
-                <span class="text-xs text-txt-muted">Sunucu</span>
-              </div>
-              <span class="text-[11px] text-txt-muted">
-                Canlı CPU, RAM, Disk telemetrisi aktif
-              </span>
-            </div>
+        <div v-if="currentView==='websites'" class="wt-notice">Web İzleme HTTP(S) yanıtını kontrol eder. Alan adı tescili, süre sonu ve donanım sağlığı bu kontrolün kapsamı dışındadır.</div>
+        <div class="wt-summary-strip wt-panel">
+          <span>
+            Toplam
+            <strong>{{ currentDevices.length }}</strong>
+          </span>
+          <span>
+            Erişilebilir
+            <strong>{{ categoryStats(viewInfo.mode).online }}</strong>
+          </span>
+          <span>
+            Ulaşılamıyor
+            <strong>{{ categoryStats(viewInfo.mode).offline }}</strong>
+          </span>
+          <span>
+            Bekleyen / Güncel Değil / Askıda
+            <strong>{{ categoryStats(viewInfo.mode).other }}</strong>
+          </span>
+        </div>
+        <section class="wt-panel wt-list">
+          <div v-if="currentView==='devices'" class="wt-tabs">
+            <button v-for="t in [{id:'',label:'Tümü'},{id:'windows',label:'Windows'},{id:'linux',label:'Linux'}]" :key="t.id" :class="{active:filter.type===t.id}" @click="filter.type=t.id">{{ t.label }}</button>
           </div>
-
-          <!-- Split Dashboard Row -->
-          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <!-- Left: Device Category Breakdown (2 Cols on lg) -->
-            <div class="lg:col-span-2 bg-[#141820] rounded-lg border border-[#232936] p-5 flex flex-col gap-4">
-              <div class="flex items-center justify-between pb-3 border-b border-[#232936]">
-                <div class="flex items-center gap-2">
-                  <span class="material-symbols-outlined text-txt-muted">pie_chart</span>
-                  <h3 class="text-sm font-semibold text-white">Altyapı Donanım Dağılımı</h3>
-                </div>
-                <span class="text-xs text-txt-muted font-mono">{{ devices.length }} Toplam</span>
-              </div>
-
-              <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
-                  <div class="flex items-center justify-between text-txt-muted">
-                    <span class="text-[11px]">Linux / Ubuntu</span>
-                    <span class="material-symbols-outlined text-[15px] text-orange-400">terminal</span>
-                  </div>
-                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.linux }}</span>
-                </div>
-
-                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
-                  <div class="flex items-center justify-between text-txt-muted">
-                    <span class="text-[11px]">Windows Server</span>
-                    <span class="material-symbols-outlined text-[15px] text-sky-400">desktop_windows</span>
-                  </div>
-                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.windows }}</span>
-                </div>
-
-                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
-                  <div class="flex items-center justify-between text-txt-muted">
-                    <span class="text-[11px]">VMware ESXi</span>
-                    <span class="material-symbols-outlined text-[15px] text-emerald-400">dns</span>
-                  </div>
-                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.esxi }}</span>
-                </div>
-
-                <div 
-                  @click="currentView = 'websites'"
-                  class="p-3 rounded bg-[#0c0e12] border border-[#232936] hover:border-emerald-500/50 cursor-pointer transition-colors flex flex-col gap-1"
-                >
-                  <div class="flex items-center justify-between text-txt-muted">
-                    <span class="text-[11px]">Web Siteleri & URL</span>
-                    <span class="material-symbols-outlined text-[15px] text-emerald-400">language</span>
-                  </div>
-                  <span class="text-xl font-mono font-semibold text-white">{{ websiteDevices.length }}</span>
-                </div>
-
-                <div 
-                  @click="currentView = 'nas'"
-                  class="p-3 rounded bg-[#0c0e12] border border-[#232936] hover:border-blue-500/50 cursor-pointer transition-colors flex flex-col gap-1"
-                >
-                  <div class="flex items-center justify-between text-txt-muted">
-                    <span class="text-[11px]">Ağ Depolama (NAS/SAN)</span>
-                    <span class="material-symbols-outlined text-[15px] text-blue-400">database</span>
-                  </div>
-                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.nas }}</span>
-                </div>
-
-                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
-                  <div class="flex items-center justify-between text-txt-muted">
-                    <span class="text-[11px]">Switch & Router</span>
-                    <span class="material-symbols-outlined text-[15px] text-purple-400">router</span>
-                  </div>
-                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.network }}</span>
-                </div>
-
-                <div class="p-3 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1">
-                  <div class="flex items-center justify-between text-txt-muted">
-                    <span class="text-[11px]">Diğer Cihazlar</span>
-                    <span class="material-symbols-outlined text-[15px] text-txt-muted">devices_other</span>
-                  </div>
-                  <span class="text-xl font-mono font-semibold text-white">{{ deviceTypeCounts.other }}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Right: Attention & Critical Alerts -->
-            <div class="bg-[#141820] rounded-lg border border-[#232936] p-5 flex flex-col gap-4">
-              <div class="flex items-center justify-between pb-3 border-b border-[#232936]">
-                <div class="flex items-center gap-2">
-                  <span class="material-symbols-outlined text-rose-400">notification_important</span>
-                  <h3 class="text-sm font-semibold text-white">Dikkat Gerektiren Düğümler</h3>
-                </div>
-                <span 
-                  class="px-2 py-0.5 rounded text-[10px] font-mono font-medium border"
-                  :class="offlineDevices.length > 0 ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'"
-                >
-                  {{ offlineDevices.length }} Kesinti
-                </span>
-              </div>
-
-              <div class="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
-                <template v-if="offlineDevices.length > 0">
-                  <div 
-                    v-for="d in offlineDevices" 
-                    :key="d.id"
-                    @click="selectDevice(d); currentView = isWebsiteDevice(d) ? 'websites' : 'devices'"
-                    class="p-2.5 rounded bg-rose-500/5 border border-rose-500/20 hover:border-rose-500/50 cursor-pointer transition-colors flex items-center justify-between text-xs"
-                  >
-                    <div class="flex flex-col gap-0.5">
-                      <span class="font-medium text-white">{{ d.name }}</span>
-                      <span class="font-mono text-[11px] text-txt-muted">{{ d.ip_address }}</span>
-                    </div>
-                    <span class="px-2 py-0.5 rounded text-[10px] bg-rose-500/10 text-rose-400 font-medium">Çevrimdışı</span>
-                  </div>
-                </template>
-                <template v-else>
-                  <div class="py-10 text-center flex flex-col items-center gap-2 text-txt-muted">
-                    <span class="material-symbols-outlined text-[28px] text-emerald-400">verified</span>
-                    <span class="text-xs font-medium text-white">Tüm Düğümler Sağlıklı</span>
-                    <span class="text-[11px]">Şu anda ağda çevrimdışı veya yanıt vermeyen cihaz yok.</span>
-                  </div>
-                </template>
-              </div>
-            </div>
+          <div class="wt-filters">
+            <label class="wt-search">
+              <span class="sr-only">Cihazlarda ara</span>
+              <input v-model="filter.query" placeholder="Ad, hedef veya konum ara…" />
+            </label>
+            <label>
+              <span class="sr-only">Erişilebilirlik filtresi</span>
+              <select v-model="filter.status">
+                <option value="">Tüm Durumlar</option>
+                <option v-for="(label,state) in stateLabels" :key="state" :value="state">{{ label }}</option>
+              </select>
+            </label>
+            <label v-if="currentView==='ip-devices'">
+              <span class="sr-only">Cihaz türü</span>
+              <select v-model="filter.type">
+                <option value="">Tüm Türler</option>
+                <option value="__nas">Tüm NAS Cihazları</option>
+                <option v-for="t in inventoryTypes" :key="t" :value="t">{{ typeLabels[t] || t }}</option>
+              </select>
+            </label>
+            <button v-if="filter.query || filter.status || filter.type" @click="filter.query='';filter.status='';filter.type=''">Filtreleri Temizle</button>
           </div>
-
-          <!-- Bottom: Recent Downtime Incidents Preview -->
-          <div class="bg-[#141820] rounded-lg border border-[#232936] p-5 flex flex-col gap-4">
-            <div class="flex items-center justify-between pb-3 border-b border-[#232936]">
-              <div class="flex items-center gap-2">
-                <span class="material-symbols-outlined text-txt-muted">history</span>
-                <h3 class="text-sm font-semibold text-white">Son Kesintiler ve Olay Günlüğü</h3>
-              </div>
-              <button 
-                @click="currentView = 'incidents'"
-                class="text-xs text-blue-400 hover:text-blue-300 font-medium flex items-center gap-1"
-              >
-                <span>Tümünü Gör ({{ incidents.length }})</span>
-                <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
-              </button>
-            </div>
-
-            <template v-if="incidents.length > 0">
-              <div class="overflow-x-auto">
-                <table class="w-full text-left text-xs border-collapse">
-                  <thead class="text-txt-muted text-[10px] uppercase font-mono border-b border-[#232936]">
-                    <tr>
-                      <th class="py-2 px-3">Olay #</th>
-                      <th class="py-2 px-3">Cihaz</th>
-                      <th class="py-2 px-3">Başlangıç</th>
-                      <th class="py-2 px-3">Kök Neden Hipotezi</th>
-                      <th class="py-2 px-3">Durum</th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-[#1e2533]">
-                    <tr v-for="inc in incidents.slice(0, 5)" :key="inc.id" class="hover:bg-[#181e28]">
-                      <td class="py-2.5 px-3 font-mono">#{{ inc.id }}</td>
-                      <td class="py-2.5 px-3 font-mono">
-                        <div class="flex items-center gap-1.5">
-                          <span class="text-blue-400 font-medium">{{ getDeviceName(inc.device_id) }}</span>
-                          <span class="text-txt-muted text-[10px]">#{{ inc.device_id }}</span>
-                        </div>
-                      </td>
-                      <td class="py-2.5 px-3 font-mono text-txt-secondary">{{ formatDateTime(inc.started_at) }}</td>
-                      <td class="py-2.5 px-3 text-txt-primary">{{ inc.auto_detection_hypothesis || formatCause(inc.classified_cause) }}</td>
-                      <td class="py-2.5 px-3">
-                        <span 
-                          class="px-2 py-0.5 rounded text-[10px] border font-medium"
-                          :class="inc.resolved_at ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'"
-                        >
-                          {{ inc.resolved_at ? 'Çözüldü' : 'Devam Ediyor' }}
-                        </span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </template>
-            <template v-else>
-              <div class="py-6 text-center text-txt-muted text-xs">
-                Kayıtlı kesinti olayı bulunmuyor. Sistem kararlı çalışıyor.
-              </div>
-            </template>
+          <component v-if="pageDevices.length" :is="currentView==='devices' ? ServerTable : currentView==='websites' ? WebsiteTable : IpDeviceTable" :devices="pageDevices" :now="clock" @edit="editDevice" @delete="deleteDevice" @profile="toggleProfile" @incidents="showIncidents" @select="loadMetrics" @upgrade="upgrade" />
+          <div v-else-if="loaded" class="wt-empty">
+            <h2>{{ currentDevices.length ? 'Filtreye Uyan Kayıt Yok' : 'Henüz Kayıt Eklenmedi' }}</h2>
+            <p>{{ currentDevices.length ? 'Arama veya durum filtresini değiştirin.' : 'İzlenecek hedefi bu kategoriye elle ekleyin.' }}</p>
+            <button v-if="!currentDevices.length" @click="openAdd(viewInfo.mode)">İlk Kaydı Ekle</button>
           </div>
-        </template>
-
-        <!-- VIEW 2: Devices (Nodes & Device Inventory) -->
-        <template v-else-if="currentView === 'devices'">
-          <!-- Host & Storage KPI Cards (Hardware / Server Nodes Only) -->
-          <HostCards 
-            :hosts="nodeDevices"
-            :gateway="gateway"
-            @open-discovery="isDiscoveryOpen = true"
-            @open-add-device="openAddDeviceModal"
-          />
-
-          <!-- Dense Monitored Devices Grid (Hardware & Network Nodes Only) -->
-          <DeviceTable 
-            :devices="nodeDevices"
-            :selectedDeviceId="selectedDevice?.id"
-            :searchQuery="searchQuery"
-            :isWebsiteView="false"
-            @select-device="selectDevice"
-            @open-add-device="openAddDeviceModal"
-            @open-discovery="isDiscoveryOpen = true"
-            @edit-device="editDevice"
-            @delete-device="deleteDevice"
-            @upgrade-agent="handleUpgradeAgent"
-          />
-
-          <!-- Bottom Telemetry & Real Incident Inspector -->
-          <TelemetryInspector 
-            :device="selectedDevice"
-            :metrics="selectedMetrics"
-            :incidents="incidents"
-            @open-incidents="currentView = 'incidents'"
-          />
-        </template>
-
-        <!-- VIEW: Websites & HTTP URL Monitoring (Uptime Kuma Style) -->
-        <template v-else-if="currentView === 'websites'">
-          <div class="bg-[#141820] rounded-lg border border-[#232936] p-6 flex flex-col gap-5">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-[#232936] gap-3">
-              <div class="flex items-center gap-2.5">
-                <span class="material-symbols-outlined text-emerald-400 text-[24px]">language</span>
-                <div>
-                  <h3 class="text-sm font-semibold text-white">Web Siteleri ve HTTP(S) URL İzleme</h3>
-                  <p class="text-xs text-txt-muted">Uptime Kuma benzeri anlık web sitesi erişilebilirlik, HTTP yanıt süreleri ve kesinti takibi</p>
-                </div>
-              </div>
-              <button 
-                @click="openAddWebsiteModal" 
-                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition-colors shadow-sm self-start sm:self-auto"
-              >
-                <span class="material-symbols-outlined text-[16px]">add</span>
-                <span>+ Web Sitesi Ekle</span>
-              </button>
+          <footer v-if="filteredDevices.length" class="wt-pagination">
+            <span>{{ filteredDevices.length }} kayıt · {{ filter.page }} / {{ pages }}</span>
+            <div>
+              <button :disabled="filter.page<=1" @click="filter.page--">Önceki</button>
+              <button :disabled="filter.page>=pages" @click="filter.page++">Sonraki</button>
             </div>
-
-            <!-- Website KPI Summary Cards -->
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1.5">
-                <span class="text-xs text-txt-muted">İzlenen Web Siteleri</span>
-                <div class="flex items-baseline gap-2">
-                  <span class="text-2xl font-mono font-semibold text-white">{{ websiteDevices.length }}</span>
-                  <span class="text-xs text-txt-muted">Hedef URL</span>
-                </div>
-              </div>
-
-              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1.5">
-                <span class="text-xs text-txt-muted">Erişilebilir (Çevrimiçi)</span>
-                <div class="flex items-baseline gap-2">
-                  <span class="text-2xl font-mono font-semibold text-emerald-400">
-                    {{ websiteDevices.filter(d => d.status === 'online').length }}
-                  </span>
-                  <span class="text-xs text-txt-muted">/ {{ websiteDevices.length }}</span>
-                </div>
-              </div>
-
-              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-1.5">
-                <span class="text-xs text-txt-muted">Erişilemeyen (Kesinti)</span>
-                <div class="flex items-baseline gap-2">
-                  <span 
-                    class="text-2xl font-mono font-semibold"
-                    :class="websiteDevices.filter(d => d.status === 'offline').length > 0 ? 'text-rose-400' : 'text-txt-muted'"
-                  >
-                    {{ websiteDevices.filter(d => d.status === 'offline').length }}
-                  </span>
-                  <span class="text-xs text-txt-muted">Alarm</span>
-                </div>
-              </div>
+          </footer>
+        </section>
+        <TelemetryInspector v-if="selectedDevice" :device="selectedDevice" :now="clock" :metrics="selectedMetrics" :loading="metricsLoading" :error="metricsError" @close="selectedID=null;metricsEpoch++" @changed="refresh" />
+      </template>
+      <section v-if="currentView==='incidents'" class="wt-panel wt-list">
+        <div class="wt-filters">
+          <input v-model="filter.query" placeholder="Cihaz veya hedef ara…" aria-label="Olaylarda ara" />
+          <select v-model="incidentFilter.category" aria-label="Olay kategorisi">
+            <option value="">Tüm Kategoriler</option>
+            <option v-for="s in categorySections" :key="s.mode" :value="s.mode">{{ s.label }}</option>
+          </select>
+          <select v-model="incidentFilter.state" aria-label="Olay durumu">
+            <option value="">Tüm Olaylar</option>
+            <option value="open">Açık</option>
+            <option value="resolved">Çözüldü</option>
+          </select>
+          <select v-model="incidentFilter.device" aria-label="Olay cihazı">
+            <option value="">Tüm Cihazlar</option>
+            <option v-for="d in devices" :key="d.id" :value="String(d.id)">{{ d.name }}</option>
+          </select>
+        </div>
+        <div v-if="filteredIncidents.length" class="wt-table-scroll">
+          <table class="wt-table">
+            <thead>
+              <tr>
+                <th>Cihaz / Kategori</th>
+                <th>Başlangıç</th>
+                <th>Bitiş</th>
+                <th>Süre</th>
+                <th>Değerlendirme</th>
+                <th>İşlem</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="i in filteredIncidents" :key="i.id">
+                <td>
+                  <button class="wt-link" @click="openIncidentDevice(i)">{{ i.device_name || deviceFor(i.device_id)?.name || 'Kayıtlı Cihaz' }}</button>
+                  <small>{{ categoryLabel(deviceFor(i.device_id)) }} · {{ deviceFor(i.device_id)?.ip_address }}</small>
+                </td>
+                <td>{{ dateTime(i.started_at) }}</td>
+                <td>{{ i.resolved_at ? dateTime(i.resolved_at) : 'Açık' }}</td>
+                <td>{{ duration(i) }}</td>
+                <td>
+                  {{ causeLabel(i.classified_cause) }}
+                  <small>{{ i.operator_confirmed ? 'Operatör tarafından doğrulandı' : 'Operatör doğrulaması yok' }}</small>
+                  <small v-if="i.auto_detection_hypothesis">Hipotez: {{ i.auto_detection_hypothesis }}</small>
+                </td>
+                <td>
+                  <button @click="classifyTarget=i">Sınıflandır</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else-if="loaded" class="wt-empty">Bu filtrelere uyan olay bulunmuyor.</p>
+        <p class="wt-muted wt-list-note">En yeni 200 olay gösterilir. Otomatik hipotez, ölçülmüş fiziksel arıza değildir.</p>
+      </section>
+      <div v-if="currentView==='backups'" class="wt-category-grid">
+        <section class="wt-panel">
+          <h2>Yedeği İndir</h2>
+          <p class="wt-muted">Ayarlar, kayıtlı cihazlar, servis yapılandırmaları ve en yeni 1000 olay dışa aktarılır. Ajan metrik geçmişi yedeğe dahil değildir.</p>
+          <p class="wt-notice">Yedek dosyası erişim anahtarları içerebilir. Güvenli bir konumda saklayın.</p>
+          <button class="wt-primary" :disabled="backupBusy" @click="downloadBackup">{{ backupBusy ? 'İşleniyor…' : 'JSON Yedeğini İndir' }}</button>
+        </section>
+        <section class="wt-panel">
+          <h2>Yedeği Geri Yükle</h2>
+          <p class="wt-muted">Mevcut kayıtlar hedef adresine göre eşleştirilir. İzleme kategorisi değiştirilemez; IP cihazlarının eski servisleri çalıştırılmaz. Eski ağ keşfi ayarları yok sayılır.</p>
+          <label class="wt-file">
+            JSON Yedek Dosyası
+            <input type="file" accept="application/json,.json" :disabled="backupBusy" @change="restoreBackup" />
+          </label>
+        </section>
+      </div>
+    </main>
+    <div v-if="chooserOpen" class="wt-modal-backdrop" @click.self="chooserOpen=false">
+      <section class="wt-modal" role="dialog" aria-modal="true" aria-labelledby="choose-title">
+        <header>
+          <h2 id="choose-title">Cihaz Ekle · İzleme Kategorisi</h2>
+          <button @click="chooserOpen=false" aria-label="Kapat">×</button>
+        </header>
+        <div class="wt-choice-list">
+          <button v-for="s in categorySections" :key="s.mode" @click="openAdd(s.mode)">
+            <span class="material-symbols-outlined">{{ s.icon }}</span>
+            <div>
+              <strong>{{ s.label }}</strong>
+              <small>{{ s.mode==='server' ? 'Windows / Linux envanteri' : s.mode==='website' ? 'HTTP(S) web sitesi' : 'NAS / ESXi / ağ cihazı · yalnızca ICMP' }}</small>
             </div>
-
-            <!-- Website Grid/Table -->
-            <template v-if="websiteDevices.length > 0">
-              <DeviceTable 
-                :devices="websiteDevices"
-                :selectedDeviceId="selectedDevice?.id"
-                :searchQuery="searchQuery"
-                :isWebsiteView="true"
-                @select-device="selectDevice"
-                @open-add-website="openAddWebsiteModal"
-                @edit-device="editDevice"
-                @delete-device="deleteDevice"
-              />
-            </template>
-            <template v-else>
-              <div class="py-16 text-center text-txt-muted flex flex-col items-center gap-3">
-                <div class="w-12 h-12 rounded-full bg-[#181e28] flex items-center justify-center text-emerald-400">
-                  <span class="material-symbols-outlined text-[28px]">language</span>
-                </div>
-                <div class="flex flex-col gap-1 max-w-md">
-                  <span class="text-sm font-medium text-white">Henüz Kayıtlı Web Sitesi Yok</span>
-                  <p class="text-xs text-txt-muted">
-                    İzlemek istediğiniz web sitelerini veya HTTP(S) servislerini ekleyerek yanıt sürelerini ve kesintileri anlık takip edebilirsiniz.
-                  </p>
-                </div>
-                <button 
-                  @click="openAddWebsiteModal" 
-                  class="mt-2 inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-colors shadow-sm"
-                >
-                  <span class="material-symbols-outlined text-[16px]">add</span>
-                  <span>İlk Web Sitesini Ekle</span>
-                </button>
-              </div>
-            </template>
-          </div>
-        </template>
-
-        <!-- VIEW 3: Network Storage & NAS (QNAP, Synology, TrueNAS, SAN) -->
-        <template v-else-if="currentView === 'nas'">
-          <div class="bg-[#141820] rounded-lg border border-[#232936] p-6 flex flex-col gap-4">
-            <div class="flex items-center justify-between pb-4 border-b border-[#232936]">
-              <div class="flex items-center gap-2">
-                <span class="material-symbols-outlined text-blue-400">database</span>
-                <h3 class="text-sm font-semibold text-white">Ağ Depolama & NAS Cihazları (QNAP, Synology, TrueNAS, SAN)</h3>
-              </div>
-              <button 
-                @click="openAddNasDevice" 
-                class="px-3 py-1.5 rounded text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium"
-              >
-                + NAS Ekle
-              </button>
-            </div>
-
-            <template v-if="nasDevices.length > 0">
-              <DeviceTable 
-                :devices="nasDevices"
-                :selectedDeviceId="selectedDevice?.id"
-                :searchQuery="searchQuery"
-                @select-device="selectDevice"
-                @open-add-device="openAddNasDevice"
-                @open-discovery="isDiscoveryOpen = true"
-                @edit-device="editDevice"
-                @delete-device="deleteDevice"
-              />
-            </template>
-            <template v-else>
-              <div class="py-16 text-center text-txt-muted flex flex-col items-center gap-2">
-                <span class="material-symbols-outlined text-[32px]">database</span>
-                <p class="text-xs">Kayıtlı ağ depolama (NAS/SAN) cihazı bulunamadı. Ağ taraması başlatıp QNAP, Synology, TrueNAS, Asustor gibi cihazları ekleyebilirsiniz.</p>
-                <button @click="isDiscoveryOpen = true" class="mt-2 px-3 py-1.5 bg-blue-600 text-white text-xs rounded">
-                  Ağ Taraması Başlat
-                </button>
-              </div>
-            </template>
-          </div>
-        </template>
-
-        <!-- VIEW: Power & Temperature / UPS -->
-        <template v-else-if="currentView === 'power'">
-          <div class="bg-[#141820] rounded-lg border border-[#232936] p-6 flex flex-col gap-5">
-            <div class="flex items-center justify-between pb-4 border-b border-[#232936]">
-              <div class="flex items-center gap-2">
-                <span class="material-symbols-outlined text-amber-400">thermostat</span>
-                <h3 class="text-sm font-semibold text-white">Sıcaklık ve Elektrik / UPS İzleme Motoru</h3>
-              </div>
-              <span class="text-xs font-mono text-txt-secondary">
-                Toplu Kesinti Eşiği: 3 Cihaz
-              </span>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-2">
-                <span class="text-xs text-txt-muted">Ortalama Sistem Odası Sıcaklığı</span>
-                <span class="text-3xl font-mono text-white">
-                  {{ stats.avg_temperature ? stats.avg_temperature + '°C' : 'Veri Yok' }}
-                </span>
-                <span class="text-[11px] text-txt-muted">
-                  Son 2 saat içinde mini-ajan veya IPMI sensörlerinden toplanan sıcaklık ortalaması.
-                </span>
-              </div>
-
-              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-2">
-                <span class="text-xs text-txt-muted">Elektrik Kesintisi Korelasyon Motoru</span>
-                <span class="text-sm font-medium text-emerald-400 flex items-center gap-1.5">
-                  <span class="material-symbols-outlined text-[18px]">bolt</span>
-                  Şebeke Kararlı (Aktif Toplu Kesinti Yok)
-                </span>
-                <span class="text-[11px] text-txt-muted">
-                  Aynı anda 3 veya daha fazla cihazın aniden kapanması durumunda otomatik "Elektrik Kesintisi" alarmı üretilir.
-                </span>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <!-- VIEW: Incidents & Logs -->
-        <template v-else-if="currentView === 'incidents'">
-          <div class="bg-[#141820] rounded-lg border border-[#232936] p-6 flex flex-col gap-4">
-            <div class="flex items-center justify-between pb-4 border-b border-[#232936]">
-              <div class="flex items-center gap-2">
-                <span class="material-symbols-outlined text-rose-400">format_list_bulleted</span>
-                <h3 class="text-sm font-semibold text-white">Kesinti Geçmişi ve SLA Olay Günlüğü</h3>
-              </div>
-              <span class="text-xs font-mono text-txt-secondary">
-                Toplam {{ incidents.length }} Olay Kaydı
-              </span>
-            </div>
-
-            <div class="overflow-x-auto border border-[#232936] rounded-md">
-              <table class="w-full text-left text-xs border-collapse">
-                <thead class="bg-[#0c0e12] text-txt-muted text-[10px] uppercase font-mono">
-                  <tr>
-                    <th class="p-3">Olay #</th>
-                    <th class="p-3">Cihaz</th>
-                    <th class="p-3">Başlangıç</th>
-                    <th class="p-3">Bitiş / Çözüm</th>
-                    <th class="p-3">Süre (Dk)</th>
-                    <th class="p-3">Tespit Sebebi</th>
-                    <th class="p-3">Operatör Notu</th>
-                    <th class="p-3 text-right">İşlem</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-[#1e2533]">
-                  <template v-if="incidents.length > 0">
-                    <tr v-for="inc in incidents" :key="inc.id" class="hover:bg-[#181e28]">
-                      <td class="p-3 font-mono">#{{ inc.id }}</td>
-                      <td class="p-3 font-mono">
-                        <div class="flex flex-col">
-                          <div class="flex items-center gap-1.5">
-                            <span class="text-blue-400 font-medium">{{ getDeviceName(inc.device_id) }}</span>
-                            <span class="text-txt-muted text-[10px]">#{{ inc.device_id }}</span>
-                          </div>
-                          <span v-if="getDeviceIp(inc.device_id)" class="text-[10px] text-txt-muted">{{ getDeviceIp(inc.device_id) }}</span>
-                        </div>
-                      </td>
-                      <td class="p-3 font-mono text-txt-secondary">{{ formatDateTime(inc.started_at) }}</td>
-                      <td class="p-3 font-mono text-txt-secondary">{{ inc.resolved_at ? formatDateTime(inc.resolved_at) : 'Devam Ediyor' }}</td>
-                      <td class="p-3 font-mono">{{ inc.duration_seconds ? Math.round(inc.duration_seconds / 60) : '—' }}</td>
-                      <td class="p-3">
-                        <span 
-                          class="px-2 py-0.5 rounded text-[11px] border"
-                          :class="inc.classified_cause === 'unclassified' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-slate-500/10 text-slate-300 border-slate-500/20'"
-                        >
-                          {{ formatCause(inc.classified_cause) }}
-                        </span>
-                      </td>
-                      <td class="p-3 text-txt-muted truncate max-w-xs">{{ inc.operator_notes || '—' }}</td>
-                      <td class="p-3 text-right">
-                        <button 
-                          @click="openClassifyModal(inc)"
-                          class="px-2.5 py-1 rounded bg-[#1e2533] hover:bg-[#283142] text-blue-400 text-[11px]"
-                        >
-                          Sınıflandır
-                        </button>
-                      </td>
-                    </tr>
-                  </template>
-                  <template v-else>
-                    <tr>
-                      <td colspan="8" class="p-12 text-center text-txt-muted">
-                        Kayıtlı kesinti bulunmuyor. Sistemler %100 kullanılabilirlikle çalışıyor.
-                      </td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </template>
-
-        <!-- VIEW: Backups & Portability -->
-        <template v-else-if="currentView === 'backups'">
-          <div class="bg-[#141820] rounded-lg border border-[#232936] p-6 flex flex-col gap-5">
-            <div class="flex items-center justify-between pb-4 border-b border-[#232936]">
-              <div class="flex items-center gap-2">
-                <span class="material-symbols-outlined text-blue-400">settings_backup_restore</span>
-                <h3 class="text-sm font-semibold text-white">Yedekleme ve Taşınabilirlik Konsolu</h3>
-              </div>
-              <button 
-                @click="downloadBackupNow"
-                class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white"
-              >
-                <span class="material-symbols-outlined text-[16px]">download</span>
-                <span>Anlık Yedek İndir (.json)</span>
-              </button>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-2">
-                <h4 class="font-medium text-white">Otomatik 03:00 Gece Yedeklemesi</h4>
-                <p class="text-txt-muted leading-relaxed">
-                  Her gece 03:00'te tüm konfigürasyon, cihazlar ve SLA kayıtları <code class="text-txt-primary">/opt/gnnwatchtower/backups/</code> dizinine tarihli olarak kaydedilir. 30 günden eski arşivler otomatik silinir.
-                </p>
-                <span class="text-emerald-400 font-mono text-[11px] mt-1">✓ Otomatik Yedekleme Servisi Aktif</span>
-              </div>
-
-              <div class="p-4 rounded bg-[#0c0e12] border border-[#232936] flex flex-col gap-2">
-                <h4 class="font-medium text-white">Hızlı Geri Yükleme (Restore)</h4>
-                <p class="text-txt-muted leading-relaxed">
-                  Önceden indirilmiş yedek dosyasını yükleyin. Veritabanı ve bildirim kanalları anında senkronize olur.
-                </p>
-                <input 
-                  type="file" 
-                  accept=".json"
-                  @change="handleFileRestore" 
-                  class="block w-full text-xs text-txt-muted file:mr-4 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-[#1e2533] file:text-white hover:file:bg-[#2c3547]"
-                />
-              </div>
-            </div>
-          </div>
-        </template>
-      </main>
+          </button>
+        </div>
+      </section>
     </div>
-
-    <!-- Modals -->
-    <DiscoveryModal 
-      :isOpen="isDiscoveryOpen" 
-      @close="isDiscoveryOpen = false" 
-      @imported="fetchData"
-    />
-
-    <AgentModal 
-      :isOpen="isAgentOpen" 
-      @close="isAgentOpen = false" 
-    />
-
-    <AddDeviceModal 
-      :isOpen="isAddDeviceOpen" 
-      :editDevice="deviceToEdit"
-      :initialType="modalInitialType"
-      @close="isAddDeviceOpen = false" 
-      @saved="fetchData"
-    />
-
-    <ClassifyModal 
-      :isOpen="isClassifyOpen"
-      :incident="incidentToClassify"
-      @close="isClassifyOpen = false"
-      @classified="fetchData"
-    />
-
-    <SettingsModal 
-      :isOpen="isSettingsOpen"
-      @close="isSettingsOpen = false"
-      @saved="fetchData"
-    />
-
-    <ChangePasswordModal 
-      :isOpen="isChangePasswordOpen"
-      :forced="isChangePasswordForced"
-      @close="handleChangePasswordClose"
-      @password-changed="handlePasswordChanged"
-    />
-
-    <LoginModal 
-      :isOpen="isLoginOpen"
-      @logged-in="handleLoginSuccess"
-    />
+    <AgentModal v-if="currentView==='devices' && agentOpen && !loginOpen && !passwordForced" :is-open="true" @close="agentOpen=false" />
+    <AddDeviceModal v-if="addOpen && !loginOpen" :is-open="true" :edit-device="editTarget" :initial-mode="initialMode" @close="addOpen=false;editTarget=null" @saved="saved" />
+    <ClassifyModal v-if="classifyTarget" :is-open="true" :incident="classifyTarget" @close="classifyTarget=null" @classified="refresh" />
+    <SettingsModal v-if="settingsOpen" :is-open="true" @close="settingsOpen=false" @saved="refresh" />
+    <ChangePasswordModal v-if="passwordOpen" :is-open="true" :forced="passwordForced" @close="!passwordForced && (passwordOpen=false)" @password-changed="passwordChanged" />
+    <LoginModal v-if="loginOpen" :is-open="true" @logged-in="loggedIn" />
   </div>
 </template>
-
-<script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import api from './services/api'
-import TopBar from './components/TopBar.vue'
-import Sidebar from './components/Sidebar.vue'
-import HostCards from './components/HostCards.vue'
-import DeviceTable from './components/DeviceTable.vue'
-import TelemetryInspector from './components/TelemetryInspector.vue'
-import DiscoveryModal from './components/DiscoveryModal.vue'
-import AgentModal from './components/AgentModal.vue'
-import AddDeviceModal from './components/AddDeviceModal.vue'
-import ClassifyModal from './components/ClassifyModal.vue'
-import SettingsModal from './components/SettingsModal.vue'
-import ChangePasswordModal from './components/ChangePasswordModal.vue'
-import LoginModal from './components/LoginModal.vue'
-import { APP_VERSION } from './version'
-
-// State
-const stats = ref({})
-const gateway = ref({ ip: '192.168.1.1', status: 'offline', latency_ms: 0 })
-const devices = ref([])
-const incidents = ref([])
-
-const getDeviceName = (deviceId) => {
-  const d = devices.value.find(item => item.id === deviceId)
-  return d ? d.name : `Cihaz #${deviceId}`
-}
-
-const getDeviceIp = (deviceId) => {
-  const d = devices.value.find(item => item.id === deviceId)
-  return d ? d.ip_address : ''
-}
-const selectedDevice = ref(null)
-const selectedMetrics = ref([])
-const searchQuery = ref('')
-const currentView = ref('overview')
-const isRefreshing = ref(false)
-
-// Modals
-const isDiscoveryOpen = ref(false)
-const isAgentOpen = ref(false)
-const isAddDeviceOpen = ref(false)
-const isClassifyOpen = ref(false)
-const isSettingsOpen = ref(false)
-const isChangePasswordOpen = ref(false)
-const isChangePasswordForced = ref(false)
-const isLoginOpen = ref(false)
-
-const deviceToEdit = ref(null)
-const incidentToClassify = ref(null)
-const modalInitialType = ref('linux')
-
-let pollTimer = null
-
-const isWebsiteDevice = (d) => {
-  if (!d) return false
-  const t = (d.device_type || '').toLowerCase()
-  return t === 'website' || t === 'web' || (d.ip_address && (d.ip_address.startsWith('http://') || d.ip_address.startsWith('https://')))
-}
-
-// Filtered Hardware / Server / Network Nodes (Excludes Websites)
-const nodeDevices = computed(() => {
-  return devices.value.filter(d => !isWebsiteDevice(d))
-})
-
-// Filtered Website devices (HTTP / HTTPS endpoints only)
-const websiteDevices = computed(() => {
-  return devices.value.filter(d => isWebsiteDevice(d))
-})
-
-// Filtered NAS / Storage devices
-const nasDevices = computed(() => {
-  return devices.value.filter(d => ['synology', 'nas', 'storage', 'qnap', 'truenas'].includes((d.device_type || '').toLowerCase()))
-})
-
-// Device breakdown statistics for Admin Dashboard
-const deviceTypeCounts = computed(() => {
-  const counts = { linux: 0, windows: 0, esxi: 0, nas: 0, network: 0, website: 0, other: 0 }
-  devices.value.forEach(d => {
-    const t = (d.device_type || '').toLowerCase()
-    if (isWebsiteDevice(d)) counts.website++
-    else if (['linux', 'ubuntu', 'debian'].includes(t)) counts.linux++
-    else if (t.includes('win')) counts.windows++
-    else if (t === 'esxi') counts.esxi++
-    else if (['nas', 'synology', 'storage', 'qnap', 'truenas'].includes(t)) counts.nas++
-    else if (['switch', 'router'].includes(t)) counts.network++
-    else counts.other++
-  })
-  return counts
-})
-
-const offlineDevices = computed(() => {
-  return devices.value.filter(d => d.status === 'offline')
-})
-
-const agentInstalledCount = computed(() => {
-  return devices.value.filter(d => d.is_agent_installed === 1).length
-})
-
-const onlineDevicesCount = computed(() => {
-  return devices.value.filter(d => d.status === 'online').length
-})
-
-const fetchData = async () => {
-  isRefreshing.value = true
-  try {
-    const [sData, dData, iData, gData] = await Promise.all([
-      api.getDashboardStats().catch(() => ({})),
-      api.getDevices().catch(() => []),
-      api.getIncidents().catch(() => []),
-      api.getGatewayHealth().catch(() => ({ ip: '192.168.1.1', status: 'offline', latency_ms: 0 }))
-    ])
-
-    stats.value = sData
-    devices.value = dData
-    incidents.value = iData
-    gateway.value = gData
-
-    // If no device selected yet and we have devices, auto-select the first one
-    if (!selectedDevice.value && devices.value.length > 0) {
-      selectDevice(devices.value[0])
-    } else if (selectedDevice.value) {
-      // Keep selectedDevice in sync with live fresh device data
-      const freshDevice = devices.value.find(d => d.id === selectedDevice.value.id)
-      if (freshDevice) {
-        selectedDevice.value = freshDevice
-      }
-      // Silently refresh metrics for selectedDevice
-      api.getDeviceTelemetry(selectedDevice.value.id).then(res => {
-        if (selectedDevice.value && selectedDevice.value.id === res.device?.id) {
-          selectedMetrics.value = res.metrics || []
-        } else if (res.metrics) {
-          selectedMetrics.value = res.metrics
-        }
-      }).catch(() => {})
-    }
-  } catch (err) {
-    // Auth failures are caught by Axios interceptor
-  } finally {
-    isRefreshing.value = false
-  }
-}
-
-const selectDevice = async (device) => {
-  selectedDevice.value = device
-  try {
-    const res = await api.getDeviceTelemetry(device.id)
-    selectedMetrics.value = res.metrics || []
-  } catch (err) {
-    selectedMetrics.value = []
-  }
-}
-
-const openAddDeviceModal = () => {
-  deviceToEdit.value = null
-  modalInitialType.value = 'linux'
-  isAddDeviceOpen.value = true
-}
-
-const openAddWebsiteModal = () => {
-  deviceToEdit.value = {
-    name: '',
-    ip_address: 'https://',
-    device_type: 'website',
-    monitoring_profile: 'active',
-    check_interval_seconds: 15,
-    purpose: 'Web Sitesi / URL İzleme'
-  }
-  modalInitialType.value = 'website'
-  isAddDeviceOpen.value = true
-}
-
-const openAddNasDevice = () => {
-  deviceToEdit.value = {
-    name: 'NAS-Depolama',
-    ip_address: '',
-    device_type: 'nas',
-    monitoring_profile: 'active',
-    check_interval_seconds: 15
-  }
-  isAddDeviceOpen.value = true
-}
-
-const editDevice = (device) => {
-  deviceToEdit.value = { ...device }
-  isAddDeviceOpen.value = true
-}
-
-const deleteDevice = async (id) => {
-  if (confirm('Bu cihazı ve bağlı tüm izleme servislerini silmek istediğinize emin misiniz?')) {
-    try {
-      await api.deleteDevice(id)
-      if (selectedDevice.value?.id === id) {
-        selectedDevice.value = null
-      }
-      fetchData()
-    } catch (err) {
-      alert('Silme hatası: ' + (err.response?.data?.error || err.message))
-    }
-  }
-}
-
-const handleUpgradeAgent = async (device) => {
-  if (!device || !device.id) return
-  if (!confirm(`'${device.name}' üzerindeki GNNwatchtower ajanına uzaktan v${APP_VERSION} güncelleme talimatı göndermek istiyor musunuz?`)) return
-  try {
-    const res = await api.upgradeAgent(device.id)
-    device.agent_upgrade_status = 'pending'
-    alert(res.message || 'Güncelleme talimatı başarıyla kuyruğa alındı.')
-  } catch (err) {
-    alert('Güncelleme hatası: ' + (err.response?.data?.error || err.message))
-  }
-}
-
-const openIncidentsView = () => {
-  currentView.value = 'incidents'
-}
-
-const openClassifyModal = (incident) => {
-  incidentToClassify.value = incident
-  isClassifyOpen.value = true
-}
-
-const handleLogout = () => {
-  api.logout()
-  isLoginOpen.value = true
-}
-
-const handleChangePasswordClose = () => {
-  if (isChangePasswordForced.value) {
-    return
-  }
-  isChangePasswordOpen.value = false
-}
-
-const handlePasswordChanged = () => {
-  isChangePasswordForced.value = false
-  isChangePasswordOpen.value = false
-  fetchData()
-}
-
-const handleLoginSuccess = (loginData) => {
-  isLoginOpen.value = false
-  if (loginData?.must_change_password) {
-    isChangePasswordForced.value = true
-    isChangePasswordOpen.value = true
-  } else {
-    fetchData()
-  }
-}
-
-const downloadBackupNow = async () => {
-  try {
-    const bundle = await api.exportBackup()
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `gnnwatchtower-backup-${new Date().toISOString().slice(0, 10)}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-  } catch (err) {
-    alert('Yedek alma hatası: ' + err.message)
-  }
-}
-
-const handleFileRestore = (e) => {
-  const file = e.target.files[0]
-  if (!file) return
-
-  const reader = new FileReader()
-  reader.onload = async (evt) => {
-    try {
-      const bundle = JSON.parse(evt.target.result)
-      await api.importBackup(bundle)
-      alert('Yedek başarıyla geri yüklendi!')
-      fetchData()
-    } catch (err) {
-      alert('Geri yükleme hatası: ' + (err.response?.data?.error || err.message))
-    }
-  }
-  reader.readAsText(file)
-}
-
-const formatDateTime = (dateStr) => {
-  if (!dateStr) return '—'
-  return new Date(dateStr).toLocaleString('tr-TR')
-}
-
-const formatCause = (cause) => {
-  switch (cause) {
-    case 'power_outage': return 'Elektrik Kesintisi'
-    case 'maintenance': return 'Planlı Bakım'
-    case 'hardware_crash': return 'Donanım Çökmesi'
-    case 'network_issue': return 'Ağ / Kablo Hatası'
-    case 'unclassified': return 'Sınıflandırılmadı'
-    default: return cause
-  }
-}
-
-onMounted(async () => {
-  // Check auth and session password change requirement
-  const token = localStorage.getItem('gnn_token')
-  if (!token) {
-    isLoginOpen.value = true
-  } else {
-    try {
-      const me = await api.getMe()
-      if (me.must_change_password) {
-        isChangePasswordForced.value = true
-        isChangePasswordOpen.value = true
-      } else {
-        fetchData()
-      }
-    } catch (err) {
-      if (err.response?.status === 403 && err.response?.data?.must_change_password) {
-        isChangePasswordForced.value = true
-        isChangePasswordOpen.value = true
-      } else if (err.response?.status === 401) {
-        localStorage.removeItem('gnn_token')
-        isLoginOpen.value = true
-      } else {
-        fetchData()
-      }
-    }
-  }
-
-  window.addEventListener('gnn-auth-failed', () => {
-    isLoginOpen.value = true
-  })
-
-  window.addEventListener('gnn-must-change-password', () => {
-    isChangePasswordForced.value = true
-    isChangePasswordOpen.value = true
-  })
-
-  // Poll real stats every 10 seconds (Zero Placeholder, 100% live data)
-  pollTimer = setInterval(() => {
-    if (!isLoginOpen.value && !isChangePasswordForced.value) {
-      fetchData()
-    }
-  }, 10000)
-})
-
-onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
-})
-</script>

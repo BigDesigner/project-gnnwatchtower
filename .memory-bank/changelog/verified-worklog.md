@@ -1,5 +1,13 @@
 # Verified Worklog
 
+## [2026-10-16] - Governing No-Additional-Attack-Surface Rule
+
+- Recorded the operator's explicit priority: monitoring must not add or expand attack surface, even at the cost of NAS/ESXi compatibility and telemetry coverage.
+- Aligned agent directives, constitution, security boundaries and coherence; retained data veracity as a supporting requirement rather than a competing golden rule.
+- Added ADR 0006 with an exposure-delta acceptance gate and authentic unavailable-data behavior; gated/deferred existing NAS/ESXi integration backlog entries.
+- Saved a current-source architectural review to `audits/attack-surface-policy-review-2026-10-16.md`, including existing listener, privilege, probing, egress and agent-provisioning boundaries. Recognized current signing support instead of repeating outdated checksum-only claims.
+- Validation: documentation and referenced source inspected; no application source/configuration changed, no build/test/deployment or network probing performed. Documentation does not certify that runtime exposure is eliminated.
+
 ## [2026-10-11] - Sentinel Memory Bank Bootstrap & Secret Hardening
 
 ### Completed Work
@@ -169,3 +177,11 @@
 
 
 
+
+## 2026-10-16 — Approved monitoring redesign and discovery retirement
+
+Implemented three server-enforced monitoring modes, ICMP-only appliance dispatch without TCP fallback, contextual Turkish navigation and entry, separate tables, truthful freshness/dashboard summaries, transactional incidents, preserved legacy inventory/history, validated backup restore, and complete scanner/UI/API/configuration removal. Existing server agent/service functionality remains scoped to Ajan Özeti. Backend tests, static analysis, frontend tests/build, browser fixture review and zero-CGO builds passed. No customer probing, alert, commit, push or deployment occurred. See [validation report](../audits/monitoring-redesign-validation-2026-10-16.md).
+
+## 2026-10-16 — README refresh and explicit Git anonymity rule
+
+Rewrote README in plain Turkish, removed emojis and unsupported deployment/EDR claims, added six factual badges, documented current monitoring categories and ICMP limits, corrected Windows/Linux service names and enrollment commands, and documented build packaging, backup/rollback limits and CLI option persistence. Commands were compared with local source; no installation, service action, test or build was executed. Local documentation links and code fences were checked. Applied the operator-provided sentinel-coauth rule to .agents/AGENTS.md through the required protected-file approval. No staging or commit occurred.

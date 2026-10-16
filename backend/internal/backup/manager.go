@@ -20,7 +20,7 @@ type BackupBundle struct {
 	Version       string                    `json:"version"`
 	ExportedAt    time.Time                 `json:"exported_at"`
 	Settings      []models.SystemSetting    `json:"settings"`
-	AlertChannels []models.AlertChannel    `json:"alert_channels"`
+	AlertChannels []models.AlertChannel     `json:"alert_channels"`
 	Devices       []DeviceExportData        `json:"devices"`
 	Incidents     []models.DowntimeIncident `json:"incidents"`
 }
@@ -37,7 +37,7 @@ func ExportAll() (*BackupBundle, error) {
 	}
 
 	bundle := &BackupBundle{
-		Version:    "1.0.0",
+		Version:    "1.1.0",
 		ExportedAt: time.Now(),
 	}
 
@@ -73,7 +73,7 @@ func ExportAll() (*BackupBundle, error) {
 	dRows, err := database.DB.Query(`
 		SELECT id, name, ip_address, mac_address, device_type, os_version, purpose, 
 		       location, operator_notes, is_agent_installed, agent_token, monitoring_profile, 
-		       check_interval_seconds, status, created_at, updated_at
+		       check_interval_seconds, status, created_at, updated_at, monitoring_mode, last_checked_at, last_probe_latency_ms
 		FROM devices
 	`)
 	if err == nil {
@@ -81,9 +81,18 @@ func ExportAll() (*BackupBundle, error) {
 		for dRows.Next() {
 			var d models.Device
 			var mac, osVer, purp, loc, notes, token sql.NullString
+			var checked sql.NullTime
+			var rtt sql.NullFloat64
 			if err := dRows.Scan(&d.ID, &d.Name, &d.IPAddress, &mac, &d.DeviceType, &osVer, &purp, &loc, &notes,
 				&d.IsAgentInstalled, &token, &d.MonitoringProfile, &d.CheckIntervalSeconds, &d.Status,
-				&d.CreatedAt, &d.UpdatedAt); err == nil {
+				&d.CreatedAt, &d.UpdatedAt, &d.MonitoringMode, &checked, &rtt); err == nil {
+				if checked.Valid {
+					d.LastCheckedAt = &checked.Time
+				}
+				if rtt.Valid {
+					v := rtt.Float64
+					d.LastProbeLatencyMS = &v
+				}
 				if mac.Valid {
 					d.MACAddress = mac.String
 				}
@@ -103,14 +112,21 @@ func ExportAll() (*BackupBundle, error) {
 					d.AgentToken = token.String
 				}
 
-				// Fetch services for this device
-				services := getServicesForDevice(d.ID)
+				// Load services after closing the inventory cursor.
+				var services []models.ServiceMonitored
 				bundle.Devices = append(bundle.Devices, DeviceExportData{
 					Device:   d,
 					Services: services,
 				})
 			}
 		}
+	}
+
+	if dRows != nil {
+		dRows.Close()
+	}
+	for i := range bundle.Devices {
+		bundle.Devices[i].Services = getServicesForDevice(bundle.Devices[i].Device.ID)
 	}
 
 	// 4. Incidents
@@ -161,6 +177,24 @@ func ImportAll(data []byte) error {
 		return fmt.Errorf("invalid backup JSON format: %w", err)
 	}
 
+	if bundle.Version != "" && bundle.Version != "1.0.0" && bundle.Version != "1.1.0" && !strings.HasPrefix(bundle.Version, "0.") {
+		return fmt.Errorf("Desteklenmeyen yedek sürümü")
+	}
+	seenTargets := map[string]bool{}
+	seenIDs := map[int]bool{}
+	for _, entry := range bundle.Devices {
+		d := entry.Device
+		if err := models.NormalizeDevice(&d); err != nil {
+			return err
+		}
+		if seenTargets[d.IPAddress] || (d.ID > 0 && seenIDs[d.ID]) {
+			return fmt.Errorf("Yedekte yinelenen cihaz kimliği veya hedef var")
+		}
+		seenTargets[d.IPAddress] = true
+		if d.ID > 0 {
+			seenIDs[d.ID] = true
+		}
+	}
 	tx, err := database.DB.Begin()
 	if err != nil {
 		return err
@@ -170,6 +204,9 @@ func ImportAll(data []byte) error {
 	// 1. Restore Settings
 	keyRegex := regexp.MustCompile(`^[a-zA-Z0-9_\-]{16,64}$`)
 	for _, s := range bundle.Settings {
+		if s.Key == "scan_subnet" {
+			continue
+		}
 		// Fix V02: Enforce strict format check on restored enrollment keys
 		if s.Key == "agent_enrollment_key" {
 			val := strings.TrimSpace(s.Value)
@@ -199,42 +236,70 @@ func ImportAll(data []byte) error {
 		`, a.Name, a.Type, configJSON, a.IsEnabled)
 	}
 
-	// 3. Restore Devices & Services
-	for _, dData := range bundle.Devices {
-		var devID int
-		err := tx.QueryRow(`
-			INSERT INTO devices (name, ip_address, mac_address, device_type, os_version, purpose, location, operator_notes, is_agent_installed, agent_token, monitoring_profile, check_interval_seconds, status)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'unknown')
-			ON CONFLICT (ip_address) DO UPDATE SET
-				name = EXCLUDED.name,
-				mac_address = EXCLUDED.mac_address,
-				device_type = EXCLUDED.device_type,
-				os_version = EXCLUDED.os_version,
-				purpose = EXCLUDED.purpose,
-				location = EXCLUDED.location,
-				operator_notes = EXCLUDED.operator_notes,
-				monitoring_profile = EXCLUDED.monitoring_profile,
-				updated_at = CURRENT_TIMESTAMP
-			RETURNING id
-		`, dData.Device.Name, dData.Device.IPAddress, dData.Device.MACAddress, dData.Device.DeviceType,
-			dData.Device.OSVersion, dData.Device.Purpose, dData.Device.Location, dData.Device.OperatorNotes,
-			dData.Device.IsAgentInstalled, dData.Device.AgentToken, dData.Device.MonitoringProfile,
-			dData.Device.CheckIntervalSeconds).Scan(&devID)
-
-		if err != nil {
-			continue
+	// Restore metadata transactionally. Restored observations start unknown;
+	// historical incidents retain their evidence, and imports never issue credentials.
+	idMap := map[int]int{}
+	for _, entry := range bundle.Devices {
+		d := entry.Device
+		if err := models.NormalizeDevice(&d); err != nil {
+			return fmt.Errorf("geçersiz yedek cihazı: %w", err)
 		}
-
-		// Restore Services
-		for _, s := range dData.Services {
-			_, _ = tx.Exec(`
-				INSERT INTO services_monitored (device_id, name, check_type, target_port, target_path, expected_status_code)
-				VALUES ($1, $2, $3, $4, $5, $6)
-			`, devID, s.Name, s.CheckType, s.TargetPort, s.TargetPath, s.ExpectedStatusCode)
+		var existingMode string
+		err := tx.QueryRow("SELECT monitoring_mode FROM devices WHERE ip_address=?", d.IPAddress).Scan(&existingMode)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if err == nil && existingMode != d.MonitoringMode {
+			return fmt.Errorf("yedek mevcut cihazın izleme kategorisini değiştiremez")
+		}
+		var token any
+		installed := false
+		if d.MonitoringMode == models.ModeServer && d.AgentToken != "" {
+			if !regexp.MustCompile(`^[a-fA-F0-9]{32,64}$`).MatchString(d.AgentToken) {
+				return fmt.Errorf("geçersiz ajan anahtarı")
+			}
+			token = d.AgentToken
+			installed = d.IsAgentInstalled
+		}
+		var id int
+		err = tx.QueryRow(`INSERT INTO devices(name,ip_address,mac_address,device_type,os_version,purpose,location,operator_notes,is_agent_installed,agent_token,monitoring_mode,monitoring_profile,check_interval_seconds,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'unknown')
+  ON CONFLICT(ip_address) DO UPDATE SET name=excluded.name,mac_address=excluded.mac_address,device_type=excluded.device_type,os_version=excluded.os_version,purpose=excluded.purpose,location=excluded.location,operator_notes=excluded.operator_notes,monitoring_profile=excluded.monitoring_profile,check_interval_seconds=excluded.check_interval_seconds,updated_at=CURRENT_TIMESTAMP RETURNING id`, d.Name, d.IPAddress, d.MACAddress, d.DeviceType, d.OSVersion, d.Purpose, d.Location, d.OperatorNotes, installed, token, d.MonitoringMode, d.MonitoringProfile, d.CheckIntervalSeconds).Scan(&id)
+		if err != nil {
+			return fmt.Errorf("cihaz geri yüklenemedi: %w", err)
+		}
+		idMap[d.ID] = id
+		for _, s := range entry.Services {
+			if err := models.ValidateService(s); err != nil {
+				return err
+			}
+			// Preserved legacy service records cannot execute outside server mode.
+			_, err = tx.Exec(`INSERT INTO services_monitored(device_id,name,check_type,target_port,target_path,expected_status_code) SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM services_monitored WHERE device_id=? AND name=? AND check_type=? AND target_port=? AND COALESCE(target_path,'')=?)`, id, s.Name, s.CheckType, s.TargetPort, s.TargetPath, s.ExpectedStatusCode, id, s.Name, s.CheckType, s.TargetPort, s.TargetPath)
+			if err != nil {
+				return err
+			}
 		}
 	}
-
+	for _, i := range bundle.Incidents {
+		id, ok := idMap[i.DeviceID]
+		if !ok {
+			return fmt.Errorf("olay kaydının cihazı yedekte bulunamadı")
+		}
+		if i.StartedAt.IsZero() || (i.ResolvedAt != nil && i.ResolvedAt.Before(i.StartedAt)) {
+			return fmt.Errorf("geçersiz olay zamanları")
+		}
+		_, err = tx.Exec(`INSERT INTO downtime_incidents(device_id,started_at,resolved_at,duration_seconds,classified_cause,auto_detection_hypothesis,operator_confirmed,operator_notes,classified_by) SELECT ?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM downtime_incidents WHERE device_id=? AND julianday(started_at)=julianday(?))`, id, backupTime(&i.StartedAt), backupTime(i.ResolvedAt), i.DurationSeconds, i.ClassifiedCause, i.AutoDetectionHypothesis, i.OperatorConfirmed, i.OperatorNotes, i.ClassifiedBy, id, backupTime(&i.StartedAt))
+		if err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+func backupTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.UTC().Format("2006-01-02 15:04:05.999999999")
 }
 
 func getServicesForDevice(devID int) []models.ServiceMonitored {
@@ -334,4 +399,3 @@ func cleanOldBackups(dir string, maxAge time.Duration) {
 		}
 	}
 }
-

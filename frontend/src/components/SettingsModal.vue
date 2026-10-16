@@ -5,7 +5,7 @@
       <div class="p-4 border-b border-[#232936] flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="material-symbols-outlined text-txt-secondary">tune</span>
-          <h3 class="text-sm font-semibold text-white">Sistem Yapılandırması ve Yedekleme</h3>
+          <h3 class="text-sm font-semibold text-white">Sistem Ayarları</h3>
         </div>
         <button @click="$emit('close')" class="text-txt-muted hover:text-white">
           <span class="material-symbols-outlined text-[20px]">close</span>
@@ -56,7 +56,7 @@
             />
           </div>
           <div class="flex flex-col gap-1">
-            <label class="text-txt-muted font-medium">Varsayılan Ağ Geçidi (Gateway IP)</label>
+            <label class="text-txt-muted font-medium">Varsayılan Ağ Geçidi (IP)</label>
             <input 
               v-model="settings.default_gateway" 
               placeholder="192.168.1.1"
@@ -72,7 +72,7 @@
             <div class="flex items-center justify-between">
               <span class="font-medium text-white flex items-center gap-1.5">
                 <span class="material-symbols-outlined text-[16px] text-sky-400">send</span>
-                Telegram Bot
+                Telegram Botu
               </span>
               <label class="flex items-center gap-1.5 cursor-pointer px-2 py-0.5 rounded border transition-colors"
                      :class="settings.telegram_enabled === 'true' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-700 bg-zinc-800/50 text-txt-muted'">
@@ -83,7 +83,7 @@
             <div class="grid grid-cols-2 gap-2">
               <input 
                 v-model="settings.telegram_bot_token" 
-                placeholder="Bot Token (Örn: 123456:ABC-DEF)" 
+                placeholder="Bot Anahtarı"
                 class="bg-[#141820] border border-[#232936] rounded px-2.5 py-1.5 text-txt-primary font-mono"
               />
               <input 
@@ -116,7 +116,7 @@
             <div class="flex items-center justify-between">
               <span class="font-medium text-white flex items-center gap-1.5">
                 <span class="material-symbols-outlined text-[16px] text-indigo-400">chat</span>
-                Discord Webhook
+                Discord Bildirim Adresi
               </span>
               <label class="flex items-center gap-1.5 cursor-pointer px-2 py-0.5 rounded border transition-colors"
                      :class="settings.discord_enabled === 'true' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-700 bg-zinc-800/50 text-txt-muted'">

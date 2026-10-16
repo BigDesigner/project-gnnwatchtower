@@ -1,14 +1,15 @@
 # Engineering Constitution (GNNwatchtower)
 
 ## 1. Core Engineering Principles
-1. **The Golden Rule - Absolute Real Data & Zero Placeholders (CRITICAL)**: Every single metric, chart point, status LED, hardware sensor reading, network rate, and incident visible in the UI must be grounded in real data queried from live backend APIs, system sockets, or the SQLite database. Placeholder numbers (e.g. fake '42.4°C', fake '2.4 Gbps'), simulated mock arrays, and dummy static text are strictly forbidden in production code. When no data has been collected or no devices exist, the application must present authentic empty states prompting real operational action.
+1. **The Governing Golden Rule - No Additional Attack Surface (CRITICAL)**: Watchtower must not introduce or expand attack surface on customer infrastructure or its monitoring environment. Reject features requiring new exposed services, broader network access, increased privileges, weakened protection, or unverified additional trust/credential/code exposure. Monitoring coverage and device compatibility never override this constraint. Existing-service reuse requires the same assessment. If a collection path cannot satisfy the rule, omit it and report unavailable data. See [ADR 0006](../.memory-bank/adr/0006-no-additional-attack-surface.md).
+   **Supporting Data Veracity Requirement:** Every displayed metric and health state must be backed by real collected data. Fabricated statistics are prohibited. Missing, stale, unsupported, or deliberately uncollected data must be explicit; security takes precedence over filling a dashboard.
 2. **Single Binary Portability**: The appliance backend and embedded frontend must build into a single static binary requiring zero external system runtime packages.
 3. **Pure Go / Zero-CGO**: All database operations and network utilities must run with `CGO_ENABLED=0` to support cross-compilation and easy updates on target appliances.
 4. **No Decorative Emojis**: System logs, terminal outputs, commits, and UI elements must never use decorative emojis. All interface status indicators must use structured CSS LED dots and Google Material Symbols (Outlined).
 
 ## 2. Go Coding Standards
 - **Error Handling**: Functions must return explicit `error` values. Never swallow errors silently or rely on `panic` in HTTP handlers or poller routines.
-- **Context Awareness**: All background goroutines, discovery scans, and HTTP requests must respect `context.Context` cancellation to prevent orphaned threads.
+- **Context Awareness**: All background goroutines, registered-target checks, and HTTP requests must respect `context.Context` cancellation to prevent orphaned threads.
 - **Concurrency Safety**: Mutex locks must protect in-memory state (`sessionsMu`, poller tables) with strict `defer unlock` scoping.
 
 ## 3. UI/UX Design System (Cisco Meraki Dark Minimalist)
