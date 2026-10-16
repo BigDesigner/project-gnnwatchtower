@@ -13,7 +13,7 @@ export const categoryLabel = d => sections.find(s => s.mode === d?.monitoring_mo
 export function observation(d, now = Date.now()) {
  if (['paused', 'maintenance'].includes(d.monitoring_profile)) return d.monitoring_profile
  if (!d.last_checked_at || !Number.isFinite(Date.parse(d.last_checked_at)) || Date.parse(d.last_checked_at) > now + 30000) return 'unknown'
- const cadence = d.monitoring_profile === 'dormant_24h' ? 86400 : d.monitoring_profile === 'dormant_30d' ? 2592000 : Math.max(15, d.check_interval_seconds || 15)
+ const cadence = d.monitoring_profile === 'dormant_24h' ? 86400 : d.monitoring_profile === 'dormant_30d' ? 2592000 : Math.max(d.monitoring_mode === 'icmp' ? 60 : 15, d.check_interval_seconds || 15)
  if (now - Date.parse(d.last_checked_at) > (2 * cadence + 30) * 1000) return 'stale'
  return ['online', 'offline'].includes(d.status) ? d.status : 'unknown'
 }

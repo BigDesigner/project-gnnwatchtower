@@ -138,7 +138,11 @@ func (p *Poller) checkSingleDevice(dev models.Device) {
 		if probe == nil {
 			probe = ProbeICMP
 		}
-		online, rtt, err = probe(dev.IPAddress, time.Second)
+		replyTimeout := time.Second
+		if dev.MonitoringMode == models.ModeICMP {
+			replyTimeout = 3 * time.Second
+		}
+		online, rtt, err = probe(dev.IPAddress, replyTimeout)
 	}
 	if err != nil {
 		_, _ = database.DB.Exec(`UPDATE devices SET status='unknown',last_checked_at=CURRENT_TIMESTAMP,last_probe_latency_ms=NULL,probe_error='Yerel ICMP kontrolü çalıştırılamadı' WHERE id=? AND monitoring_profile NOT IN ('paused','maintenance') AND monitoring_mode=? AND ip_address=?`, dev.ID, dev.MonitoringMode, dev.IPAddress)
@@ -194,12 +198,18 @@ func (p *Poller) recordObservation(dev models.Device, status string, rtt *float6
 			probeNote = "ICMP yanıtı yok; güncel ajan raporu var"
 		}
 	}
-	// Confirm loss on the next scheduled observation, without sending retries.
+	// Confirm three scheduled failures without extra packets or protocol fallback.
 	const pendingICMP = "ICMP yanıtı alınamadı; doğrulama bekleniyor"
-	if status == "offline" && mode == models.ModeICMP && previous != "offline" && !(previous == "unknown" && previousProbeNote == pendingICMP) {
-		status = "unknown"
-		probeNote = pendingICMP
-		rtt = nil
+	const secondICMP = "ICMP yanıtı alınamadı (2/3); doğrulama bekleniyor"
+	if status == "offline" && mode == models.ModeICMP && previous != "offline" {
+		if previous != "unknown" || previousProbeNote != secondICMP {
+			status = "unknown"
+			probeNote = pendingICMP
+			if previous == "unknown" && previousProbeNote == pendingICMP {
+				probeNote = secondICMP
+			}
+			rtt = nil
+		}
 	}
 	response := 0
 	if rtt != nil {
@@ -247,7 +257,11 @@ func (p *Poller) recordObservation(dev models.Device, status string, rtt *float6
 			if incidentID > 0 {
 				incident.EvaluateSimultaneousOutages(dev.ID, incidentID)
 			}
-			incident.DispatchAlert(dev.Name, dev.IPAddress, event, "Erişilebilirlik durumu değişti; donanım sağlığı ölçülmedi.")
+			detail := "Erişilebilirlik durumu değişti; donanım sağlığı ölçülmedi."
+			if mode == models.ModeICMP {
+				detail = "ICMP erişilebilirliği değişti; yanıtsızlık filtreleme veya ağ yolundan kaynaklanabilir. Güç ve donanım sağlığı doğrulanmadı."
+			}
+			incident.DispatchAlert(dev.Name, dev.IPAddress, event, detail)
 		}
 	}
 	return nil

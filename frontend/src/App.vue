@@ -876,7 +876,7 @@ onUnmounted(() => {
             <div class="flex flex-col gap-1 leading-relaxed">
               <span class="font-semibold text-white">Sıfır Ek Saldırı Yüzeyi · Yalnızca ICMP Ping İle İzleme</span>
               <p class="text-txt-secondary text-[11px]">
-                Bu kategorideki NAS, ESXi ve ağ anahtarlarında SNMP, cihaz API’leri, SSH veya ajan kullanılmaz; müşteri ortamında yeni dinleyici veya port açılmaz. Disk, RAID ve donanım sağlığı toplanmaz. Ping yanıtı alınamaması ağ kesintisi veya ICMP filtrelemesinden kaynaklanabilir.
+                Bu kategorideki NAS, ESXi ve ağ anahtarlarında SNMP, cihaz API’leri, SSH veya ajan kullanılmaz; müşteri ortamında yeni dinleyici veya port açılmaz. Disk, RAID ve donanım sağlığı toplanmaz. En sık 60 saniyede bir tek ping gönderilir; yanıt için 3 saniye beklenir. Üç ardışık yanıtsız kontrolde erişim alarmı açılır; başarılı yanıtta kapanır. Firewall, EDR veya ağ kuralları ping yanıtını engelleyebilir: “ICMP ile ulaşılamıyor” cihazın kapalı olduğunu kanıtlamaz. Port ve ARP taraması yapılmaz.
               </p>
             </div>
           </div>

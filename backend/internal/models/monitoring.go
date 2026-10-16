@@ -115,6 +115,9 @@ func CheckCadence(d Device) time.Duration {
 		return 30 * 24 * time.Hour
 	}
 	n := d.CheckIntervalSeconds
+	if d.MonitoringMode == ModeICMP && n < 60 {
+		n = 60
+	}
 	if n < 15 {
 		n = 15
 	}

@@ -115,7 +115,7 @@
               required
               class="bg-[#0c0e12] border border-[#232936] rounded-md px-3 py-2 text-txt-primary font-mono focus:outline-none focus:border-blue-500"
             />
-            <small class="text-[10px] text-txt-muted">Minimum 15 saniye</small>
+            <small class="text-[10px] text-txt-muted">{{ draft.monitoring_mode === 'icmp' ? 'IP cihazlarında en az 60 saniye uygulanır; alarm için üç ardışık yanıtsız kontrol gerekir.' : 'Minimum 15 saniye' }}</small>
           </div>
         </div>
 

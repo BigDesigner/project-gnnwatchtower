@@ -8,7 +8,7 @@ const props = defineProps({
 });
 
 const state = computed(() => observation(props.device, props.now));
-const label = computed(() => stateLabels[state.value] || 'Bilinmiyor');
+const label = computed(() => props.device.monitoring_mode === 'icmp' && state.value === 'offline' ? 'ICMP ile Ulaşılamıyor' : stateLabels[state.value] || 'Bilinmiyor');
 
 const badgeClass = computed(() => {
   switch (state.value) {
