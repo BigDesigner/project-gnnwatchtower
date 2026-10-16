@@ -17,7 +17,8 @@ func TestPadRight(t *testing.T) {
 		{"ASCII short", "Dev1", 10, 10},
 		{"Turkish short", "Müşteri", 10, 10},
 		{"Turkish exact", "Geliştirici", 11, 11},
-		{"Truncate with ellipsis", "ÇokUzunMüşteriŞirketAdıAŞ", 10, 10},
+		{"ASCII exact", "1234567890", 10, 10},
+		{"Slice long if exceeding", "ÇokUzunMüşteriŞirketAdıAŞ", 10, 10},
 	}
 
 	for _, tc := range tests {
@@ -31,22 +32,72 @@ func TestPadRight(t *testing.T) {
 	}
 }
 
-func TestBuildAsciiTable(t *testing.T) {
-	company := "Örnek Teknoloji A.Ş."
-	device := "İç-Switch-01"
-	ip := "192.168.1.100"
-	status := "KESİNTİ (DOWN)"
-	timestamp := "2026-10-15 16:45:00"
-
-	table := BuildAsciiTable(company, device, ip, status, timestamp)
-
-	lines := strings.Split(table, "\n")
-	if len(lines) != 9 {
-		t.Fatalf("expected 9 lines in ASCII table, got %d", len(lines))
+func TestWrapText(t *testing.T) {
+	longText := "Akansu Plastik ve Cam San. ve Tic. A.Ş."
+	lines := wrapText(longText, 26)
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapText to split %q into multiple lines, got %v", longText, lines)
 	}
 
-	// Each line in the table should have the exact same visual rune length (36 runes)
-	expectedRuneCount := 36
+	for i, l := range lines {
+		runeCount := utf8.RuneCountInString(l)
+		if runeCount > 26 {
+			t.Errorf("line %d (%s) exceeds maxWidth 26: length %d", i, l, runeCount)
+		}
+	}
+
+	// Verify no text is lost when joined with spaces
+	rejoined := strings.Join(lines, " ")
+	if rejoined != longText {
+		t.Errorf("wrapText lost content: rejoined = %q, want %q", rejoined, longText)
+	}
+}
+
+func TestGetAlertSeverity(t *testing.T) {
+	tests := []struct {
+		alertType    string
+		wantSeverity AlertSeverity
+		wantEmoji    string
+		wantDiscord  int
+		wantHex      string
+	}{
+		{"BAĞLANTI KESİNTİSİ (DOWN)", SeverityDown, "🔴", 0xDC2626, "#DC2626"},
+		{"HATA OLUŞTU", SeverityDown, "🔴", 0xDC2626, "#DC2626"},
+		{"CİHAZ TEKRAR ÇEVRİMİÇİ (ONLINE)", SeverityRecover, "🟢", 0x16A34A, "#16A34A"},
+		{"BAŞARIYLA GÜNCELLENDİ", SeverityRecover, "🟢", 0x16A34A, "#16A34A"},
+		{"PLANLI BAKIM", SeverityWarning, "🟡", 0xF59E0B, "#F59E0B"},
+		{"TEST BAĞLANTISI", SeverityInfo, "🔵", 0x2563EB, "#2563EB"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.alertType, func(t *testing.T) {
+			sev, emoji, dColor, hexColor := GetAlertSeverity(tc.alertType)
+			if sev != tc.wantSeverity || emoji != tc.wantEmoji || dColor != tc.wantDiscord || hexColor != tc.wantHex {
+				t.Errorf("GetAlertSeverity(%q) = (%v, %v, %x, %v); want (%v, %v, %x, %v)",
+					tc.alertType, sev, emoji, dColor, hexColor, tc.wantSeverity, tc.wantEmoji, tc.wantDiscord, tc.wantHex)
+			}
+		})
+	}
+}
+
+func TestBuildAsciiTable(t *testing.T) {
+	company := "Akansu Plastik ve Cam San. ve Tic. A.Ş."
+	location := "Merkez Sistem Odası"
+	device := "IBMSRV"
+	ip := "10.38.1.155"
+	status := "AJAN OTOMATİK BAĞLANDI"
+	timestamp := "2026-10-15 18:04:14"
+	detail := "Kayıtlı cihaz 'IBMSRV' yeni ajan anahtarı (v0.4.7) ile otomatik tescil edildi."
+
+	table := BuildAsciiTable(company, location, device, ip, status, timestamp, detail)
+
+	lines := strings.Split(table, "\n")
+	if len(lines) < 8 {
+		t.Fatalf("expected at least 8 lines in ASCII table, got %d", len(lines))
+	}
+
+	// Each line in the table should have the exact same visual rune length (42 runes)
+	expectedRuneCount := 42
 	for i, line := range lines {
 		runeCount := utf8.RuneCountInString(line)
 		if runeCount != expectedRuneCount {
@@ -54,29 +105,37 @@ func TestBuildAsciiTable(t *testing.T) {
 		}
 	}
 
-	// Verify required content is in table
+	// Verify required content is in table without truncation ellipses
+	if strings.Contains(table, "...") {
+		t.Errorf("table should not contain truncation ellipses: %s", table)
+	}
 	if !strings.Contains(table, "Parametre") || !strings.Contains(table, "Değer") {
 		t.Errorf("table missing header: %s", table)
+	}
+	if !strings.Contains(table, "Akansu Plastik ve Cam San.") || !strings.Contains(table, "ve Tic. A.Ş.") {
+		t.Errorf("table missing wrapped customer name: %s", table)
 	}
 }
 
 func TestFormatTelegramAlert(t *testing.T) {
-	company := "Akdeniz Lojistik Ltd. Şti."
-	location := "Antalya Şubesi"
-	device := "Router-Core"
-	ip := "10.10.1.1"
+	company := "Akansu Plastik ve Cam San. ve Tic. A.Ş."
+	location := "Merkez Sistem Odası"
+	device := "IBMSRV"
+	ip := "10.38.1.155"
 	alertType := "BAĞLANTI KESİNTİSİ (DOWN)"
 	detail := "Cihaz 3 periyot boyunca ping yanıtı vermedi & zaman aşımına uğradı <timeout>."
-	timestamp := "2026-10-15 16:45:00"
+	timestamp := "2026-10-15 18:04:14"
 
 	msg := FormatTelegramAlert(company, location, device, ip, alertType, detail, timestamp)
 
-	// Verify company name is prominent
-	if !strings.Contains(msg, "<b>MÜŞTERİ: Akdeniz Lojistik Ltd. Şti.</b>") {
-		t.Errorf("telegram message missing bold customer name: %s", msg)
+	// Verify title has [ALERT - GNNWATCHTOWER] and red circle emoji
+	if !strings.Contains(msg, "<b>🔴 [ALERT - GNNWATCHTOWER] BAĞLANTI KESİNTİSİ (DOWN)</b>") {
+		t.Errorf("telegram message missing expected title: %s", msg)
 	}
-	if !strings.Contains(msg, "(Antalya Şubesi)") {
-		t.Errorf("telegram message missing location: %s", msg)
+
+	// Verify no redundant lines outside table
+	if strings.Contains(msg, "<b>MÜŞTERİ:") || strings.Contains(msg, "<b>BİLDİRİM:") {
+		t.Errorf("telegram message should not have redundant headers outside table: %s", msg)
 	}
 
 	// Verify <pre> block for ASCII table exists
@@ -84,12 +143,12 @@ func TestFormatTelegramAlert(t *testing.T) {
 		t.Errorf("telegram message missing <pre> table block: %s", msg)
 	}
 
-	// Verify HTML escaping for detail text (<timeout> should be escaped to &lt;timeout&gt;)
+	// Verify HTML escaping for detail inside table (& should be &amp; or text preserved safely)
 	if strings.Contains(msg, "<timeout>") {
 		t.Errorf("detail text was not properly HTML escaped: %s", msg)
 	}
 	if !strings.Contains(msg, "&lt;timeout&gt;") {
-		t.Errorf("expected &lt;timeout&gt; in detail: %s", msg)
+		t.Errorf("expected &lt;timeout&gt; in escaped table: %s", msg)
 	}
 }
 
@@ -125,8 +184,8 @@ func TestFormatDiscordAlert(t *testing.T) {
 		t.Fatalf("FormatDiscordAlert did not produce valid JSON: %v", err)
 	}
 
-	if !strings.Contains(payload.Content, company) {
-		t.Errorf("content does not contain company: %s", payload.Content)
+	if !strings.Contains(payload.Content, "[ALERT - GNNWATCHTOWER]") {
+		t.Errorf("content does not contain [ALERT - GNNWATCHTOWER]: %s", payload.Content)
 	}
 
 	if len(payload.Embeds) != 1 {
@@ -139,21 +198,14 @@ func TestFormatDiscordAlert(t *testing.T) {
 		t.Errorf("expected color 0xDC2626 for DOWN alert, got 0x%X", embed.Color)
 	}
 
-	// Verify ASCII table exists inside description code block
-	if !strings.Contains(embed.Description, "```") || !strings.Contains(embed.Description, "┌───────────┬──────────────────────┐") {
-		t.Errorf("embed description does not contain markdown table: %s", embed.Description)
+	// Verify title has [ALERT - GNNWATCHTOWER]
+	if !strings.Contains(embed.Title, "🔴 [ALERT - GNNWATCHTOWER]") {
+		t.Errorf("embed title missing [ALERT - GNNWATCHTOWER]: %s", embed.Title)
 	}
 
-	// Verify fields
-	foundCompany := false
-	for _, f := range embed.Fields {
-		if strings.Contains(f.Name, "Müşteri Şirketi") && strings.Contains(f.Value, company) {
-			foundCompany = true
-			break
-		}
-	}
-	if !foundCompany {
-		t.Errorf("fields did not contain customer company: %+v", embed.Fields)
+	// Verify ASCII table exists inside description code block
+	if !strings.Contains(embed.Description, "```") || !strings.Contains(embed.Description, "┌───────────┬────────────────────────────┐") {
+		t.Errorf("embed description does not contain markdown table: %s", embed.Description)
 	}
 
 	// Test ONLINE recovery alert maps to Green color 0x16A34A
@@ -166,5 +218,49 @@ func TestFormatDiscordAlert(t *testing.T) {
 	_ = json.Unmarshal([]byte(greenPayloadJSON), &greenPayload)
 	if len(greenPayload.Embeds) > 0 && greenPayload.Embeds[0].Color != 0x16A34A {
 		t.Errorf("expected color 0x16A34A for ONLINE alert, got 0x%X", greenPayload.Embeds[0].Color)
+	}
+}
+
+func TestFormatSlackAlert(t *testing.T) {
+	company := "Boğaziçi Finans A.Ş."
+	location := "İstanbul Veri Merkezi"
+	device := "Edge-Firewall-01"
+	ip := "172.16.0.1"
+	alertType := "BAĞLANTI KESİNTİSİ (DOWN)"
+	detail := "Firewall erişimi koptu"
+	timestamp := "2026-10-15 16:45:00"
+
+	jsonPayload := FormatSlackAlert(company, location, device, ip, alertType, detail, timestamp)
+
+	var payload struct {
+		Attachments []struct {
+			Color  string `json:"color"`
+			Title  string `json:"title"`
+			Text   string `json:"text"`
+			Fields []struct {
+				Title string `json:"title"`
+				Value string `json:"value"`
+			} `json:"fields"`
+			Footer string `json:"footer"`
+		} `json:"attachments"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonPayload), &payload); err != nil {
+		t.Fatalf("FormatSlackAlert did not produce valid JSON: %v", err)
+	}
+
+	if len(payload.Attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(payload.Attachments))
+	}
+
+	att := payload.Attachments[0]
+	if att.Color != "#DC2626" {
+		t.Errorf("expected color #DC2626 for Slack DOWN alert, got %s", att.Color)
+	}
+	if !strings.Contains(att.Title, "🔴 [ALERT - GNNWATCHTOWER]") {
+		t.Errorf("attachment title missing [ALERT - GNNWATCHTOWER]: %s", att.Title)
+	}
+	if !strings.Contains(att.Text, "```") || !strings.Contains(att.Text, "┌───────────┬────────────────────────────┐") {
+		t.Errorf("attachment text missing ASCII table: %s", att.Text)
 	}
 }

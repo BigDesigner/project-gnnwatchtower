@@ -628,20 +628,34 @@ func TestAlert(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Telegram test bildirimi başarıyla iletildi!"})
 
 	case "discord":
-		discMsg := incident.FormatDiscordAlert(
-			companyName,
-			location,
-			"Test Cihazı",
-			"127.0.0.1",
-			"TEST BAĞLANTISI",
-			"GNNwatchtower Discord entegrasyonu ve bildirim tablosu başarıyla doğrulandı.",
-			testTimestamp,
-		)
-		if err := incident.SendDiscord(req.DiscordWebhookURL, discMsg); err != nil {
+		webhookURL := req.DiscordWebhookURL
+		var webhookMsg string
+		if strings.Contains(webhookURL, "hooks.slack.com") {
+			webhookMsg = incident.FormatSlackAlert(
+				companyName,
+				location,
+				"Test Cihazı",
+				"127.0.0.1",
+				"TEST BAĞLANTISI",
+				"GNNwatchtower Slack entegrasyonu ve bildirim tablosu başarıyla doğrulandı.",
+				testTimestamp,
+			)
+		} else {
+			webhookMsg = incident.FormatDiscordAlert(
+				companyName,
+				location,
+				"Test Cihazı",
+				"127.0.0.1",
+				"TEST BAĞLANTISI",
+				"GNNwatchtower Discord entegrasyonu ve bildirim tablosu başarıyla doğrulandı.",
+				testTimestamp,
+			)
+		}
+		if err := incident.SendDiscord(webhookURL, webhookMsg); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Discord test bildirimi başarıyla iletildi!"})
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Discord / Slack test bildirimi başarıyla iletildi!"})
 
 	case "brevo":
 		if err := incident.SendBrevoEmail(

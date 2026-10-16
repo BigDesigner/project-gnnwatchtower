@@ -116,7 +116,7 @@
             <div class="flex items-center justify-between">
               <span class="font-medium text-white flex items-center gap-1.5">
                 <span class="material-symbols-outlined text-[16px] text-indigo-400">chat</span>
-                Discord Bildirim Adresi
+                Discord / Slack Webhook Adresi
               </span>
               <label class="flex items-center gap-1.5 cursor-pointer px-2 py-0.5 rounded border transition-colors"
                      :class="settings.discord_enabled === 'true' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-700 bg-zinc-800/50 text-txt-muted'">
@@ -126,7 +126,7 @@
             </div>
             <input 
               v-model="settings.discord_webhook_url" 
-              placeholder="https://discord.com/api/webhooks/..." 
+              placeholder="https://discord.com/api/webhooks/... veya https://hooks.slack.com/..." 
               class="bg-[#141820] border border-[#232936] rounded px-2.5 py-1.5 text-txt-primary font-mono"
             />
             <div class="flex items-center justify-between pt-1">
@@ -137,7 +137,7 @@
                 class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1e2533] hover:bg-[#283142] disabled:opacity-40 text-indigo-400 text-[11px] font-medium transition-colors"
               >
                 <span class="material-symbols-outlined text-[14px]">chat</span>
-                <span>{{ testingChannel === 'discord' ? 'Gönderiliyor...' : 'Discord Test Mesajı Gönder' }}</span>
+                <span>{{ testingChannel === 'discord' ? 'Gönderiliyor...' : 'Discord / Slack Test Gönder' }}</span>
               </button>
               <span v-if="testResults.discord" :class="testResults.discord.success ? 'text-emerald-400' : 'text-rose-400'" class="text-[11px] truncate max-w-xs">
                 {{ testResults.discord.message }}

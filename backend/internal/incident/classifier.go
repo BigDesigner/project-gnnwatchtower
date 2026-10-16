@@ -59,85 +59,184 @@ func isChannelEnabled(val string) bool {
 // padRight pads string with spaces to reach exact visual rune width (supports UTF-8 / Turkish characters)
 func padRight(s string, targetWidth int) string {
 	runes := []rune(s)
-	if len(runes) > targetWidth {
-		if targetWidth > 3 {
-			return string(runes[:targetWidth-3]) + "..."
-		}
+	if len(runes) >= targetWidth {
 		return string(runes[:targetWidth])
 	}
 	return s + strings.Repeat(" ", targetWidth-len(runes))
 }
 
-// BuildAsciiTable formats a 36-character wide UTF-8 box table for Telegram and Discord code blocks
-func BuildAsciiTable(company, device, ip, status, timestamp string) string {
-	col1Width := 9
-	col2Width := 20
-
-	row := func(param, val string) string {
-		return fmt.Sprintf("│ %s │ %s │", padRight(param, col1Width), padRight(val, col2Width))
+// wrapText splits text into lines of at most maxWidth runes without breaking words when possible
+func wrapText(text string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		return []string{text}
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return []string{""}
 	}
 
-	return fmt.Sprintf(
-`┌───────────┬──────────────────────┐
-│ Parametre │ Değer                │
-├───────────┼──────────────────────┤
-%s
-%s
-%s
-%s
-%s
-└───────────┴──────────────────────┘`,
-		row("Müşteri", company),
-		row("Cihaz", device),
-		row("IP", ip),
-		row("Durum", status),
-		row("Zaman", timestamp),
-	)
+	var result []string
+	paragraphs := strings.Split(text, "\n")
+	for _, para := range paragraphs {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			continue
+		}
+
+		currentLine := ""
+		for _, word := range words {
+			wRunes := []rune(word)
+			if currentLine == "" {
+				if len(wRunes) <= maxWidth {
+					currentLine = word
+				} else {
+					for len(wRunes) > maxWidth {
+						result = append(result, string(wRunes[:maxWidth]))
+						wRunes = wRunes[maxWidth:]
+					}
+					currentLine = string(wRunes)
+				}
+			} else {
+				cRunes := []rune(currentLine)
+				if len(cRunes)+1+len(wRunes) <= maxWidth {
+					currentLine += " " + word
+				} else {
+					result = append(result, currentLine)
+					if len(wRunes) <= maxWidth {
+						currentLine = word
+					} else {
+						for len(wRunes) > maxWidth {
+							result = append(result, string(wRunes[:maxWidth]))
+							wRunes = wRunes[maxWidth:]
+						}
+						currentLine = string(wRunes)
+					}
+				}
+			}
+		}
+		if currentLine != "" {
+			result = append(result, currentLine)
+		}
+	}
+	if len(result) == 0 {
+		return []string{""}
+	}
+	return result
 }
 
-// FormatTelegramAlert constructs a rich HTML notification with customer company name and ASCII table
-func FormatTelegramAlert(company, location, device, ip, alertType, detail, timestamp string) string {
-	escapedComp := html.EscapeString(company)
-	escapedLoc := html.EscapeString(location)
-	escapedType := html.EscapeString(alertType)
-	escapedDetail := html.EscapeString(detail)
+// AlertSeverity represents alert status severity level
+type AlertSeverity string
 
-	table := BuildAsciiTable(company, device, ip, alertType, timestamp)
-	escapedTable := html.EscapeString(table)
+const (
+	SeverityDown    AlertSeverity = "DOWN"
+	SeverityRecover AlertSeverity = "RECOVER"
+	SeverityWarning AlertSeverity = "WARNING"
+	SeverityInfo    AlertSeverity = "INFO"
+)
 
-	locStr := ""
-	if escapedLoc != "" {
-		locStr = fmt.Sprintf(" (%s)", escapedLoc)
+// GetAlertSeverity returns severity category, emoji, Discord int color, and hex color
+func GetAlertSeverity(alertType string) (AlertSeverity, string, int, string) {
+	upper := strings.ToUpper(alertType)
+	if strings.Contains(upper, "DOWN") ||
+		strings.Contains(upper, "KESİNTİ") ||
+		strings.Contains(upper, "HATA") ||
+		strings.Contains(upper, "CRASH") ||
+		strings.Contains(upper, "OFFLINE") ||
+		strings.Contains(upper, "KAPANDI") ||
+		strings.Contains(upper, "BAŞARISIZ") {
+		return SeverityDown, "🔴", 0xDC2626, "#DC2626"
+	}
+	if strings.Contains(upper, "ONLINE") ||
+		strings.Contains(upper, "RECOVER") ||
+		strings.Contains(upper, "ÇÖZÜLDÜ") ||
+		strings.Contains(upper, "DÜZELDİ") ||
+		strings.Contains(upper, "BAŞARI") ||
+		strings.Contains(upper, "AKTİF") {
+		return SeverityRecover, "🟢", 0x16A34A, "#16A34A"
+	}
+	if strings.Contains(upper, "BAKIM") ||
+		strings.Contains(upper, "PLANLI") ||
+		strings.Contains(upper, "UYARI") {
+		return SeverityWarning, "🟡", 0xF59E0B, "#F59E0B"
+	}
+	return SeverityInfo, "🔵", 0x2563EB, "#2563EB"
+}
+
+// BuildAsciiTable formats a 42-character wide UTF-8 box table for Telegram, Discord, and Slack code blocks
+func BuildAsciiTable(company, location, device, ip, status, timestamp, detail string) string {
+	col1Width := 9
+	col2Width := 26
+
+	col1Bar := strings.Repeat("─", col1Width+2)
+	col2Bar := strings.Repeat("─", col2Width+2)
+
+	top := fmt.Sprintf("┌%s┬%s┐", col1Bar, col2Bar)
+	header := fmt.Sprintf("│ %s │ %s │", padRight("Parametre", col1Width), padRight("Değer", col2Width))
+	divider := fmt.Sprintf("├%s┼%s┤", col1Bar, col2Bar)
+	bottom := fmt.Sprintf("└%s┴%s┘", col1Bar, col2Bar)
+
+	var lines []string
+	lines = append(lines, top, header, divider)
+
+	addField := func(param, val string) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return
+		}
+		wrapped := wrapText(val, col2Width)
+		for idx, line := range wrapped {
+			p := ""
+			if idx == 0 {
+				p = param
+			}
+			lines = append(lines, fmt.Sprintf("│ %s │ %s │", padRight(p, col1Width), padRight(line, col2Width)))
+		}
 	}
 
+	addField("Müşteri", company)
+	if location != "" {
+		addField("Lokasyon", location)
+	}
+	addField("Cihaz", device)
+	addField("IP", ip)
+	addField("Durum", status)
+	addField("Zaman", timestamp)
+	if detail != "" {
+		addField("Detay", detail)
+	}
+
+	lines = append(lines, bottom)
+	return strings.Join(lines, "\n")
+}
+
+// FormatTelegramAlert constructs a clean, non-redundant HTML notification with ASCII table and emoji severity
+func FormatTelegramAlert(company, location, device, ip, alertType, detail, timestamp string) string {
+	_, emoji, _, _ := GetAlertSeverity(alertType)
+	escapedType := html.EscapeString(alertType)
+
+	table := BuildAsciiTable(company, location, device, ip, alertType, timestamp, detail)
+	escapedTable := html.EscapeString(table)
+
 	return fmt.Sprintf(
-`<b>[GNNWATCHTOWER ALTYAPI BİLDİRİMİ]</b>
-<b>MÜŞTERİ: %s</b>%s
-<b>BİLDİRİM: %s</b>
+`<b>%s [ALERT - GNNWATCHTOWER] %s</b>
 
 <pre>
 %s
 </pre>
-<b>Detay:</b> %s
 ────────────────────────────────────
 <i>GNNwatchtower Enterprise Appliance v%s</i>`,
-		escapedComp, locStr, escapedType, escapedTable, escapedDetail, version.Get(),
+		emoji, escapedType, escapedTable, version.Get(),
 	)
 }
 
 // FormatDiscordAlert constructs a Discord webhook payload with color-coded embed, ASCII table and fields
 func FormatDiscordAlert(company, location, device, ip, alertType, detail, timestamp string) string {
-	table := BuildAsciiTable(company, device, ip, alertType, timestamp)
-
-	color := 0x0284C7 // Cyan / Info default
-	upperType := strings.ToUpper(alertType)
-	if strings.Contains(upperType, "DOWN") || strings.Contains(upperType, "KESİNTİ") || strings.Contains(upperType, "HATA") || strings.Contains(upperType, "CRASH") || strings.Contains(upperType, "OFFLINE") {
-		color = 0xDC2626 // Red
-	} else if strings.Contains(upperType, "ONLINE") || strings.Contains(upperType, "RECOVERY") || strings.Contains(upperType, "BAŞARI") || strings.Contains(upperType, "ÇÖZÜLDÜ") {
-		color = 0x16A34A // Green
-	} else if strings.Contains(upperType, "BAKIM") || strings.Contains(upperType, "PLANLI") || strings.Contains(upperType, "UYARI") {
-		color = 0xF59E0B // Orange / Amber
-	}
+	table := BuildAsciiTable(company, location, device, ip, alertType, timestamp, detail)
+	_, emoji, color, _ := GetAlertSeverity(alertType)
 
 	locDisplay := location
 	if locDisplay == "" {
@@ -145,12 +244,12 @@ func FormatDiscordAlert(company, location, device, ip, alertType, detail, timest
 	}
 
 	payload := map[string]interface{}{
-		"content": fmt.Sprintf("**[GNNwatchtower v%s] %s Bildirimi** — **%s**", version.Get(), alertType, company),
+		"content": fmt.Sprintf("**%s [ALERT - GNNWATCHTOWER]** — **%s**", emoji, company),
 		"embeds": []map[string]interface{}{
 			{
-				"title": fmt.Sprintf("[%s] %s (%s)", alertType, device, ip),
-				"description": fmt.Sprintf("```\n%s\n```\n**Detay:** %s", table, detail),
-				"color": color,
+				"title":       fmt.Sprintf("%s [ALERT - GNNWATCHTOWER] %s", emoji, alertType),
+				"description": fmt.Sprintf("```\n%s\n```", table),
+				"color":       color,
 				"fields": []map[string]interface{}{
 					{"name": "Müşteri Şirketi", "value": fmt.Sprintf("**%s**", company), "inline": true},
 					{"name": "Lokasyon / Şube", "value": locDisplay, "inline": true},
@@ -162,6 +261,39 @@ func FormatDiscordAlert(company, location, device, ip, alertType, detail, timest
 				"footer": map[string]string{
 					"text": fmt.Sprintf("GNNwatchtower Enterprise Appliance v%s • %s", version.Get(), company),
 				},
+			},
+		},
+	}
+
+	jsonBytes, _ := json.Marshal(payload)
+	return string(jsonBytes)
+}
+
+// FormatSlackAlert constructs a Slack webhook payload with color attachments and ASCII table
+func FormatSlackAlert(company, location, device, ip, alertType, detail, timestamp string) string {
+	table := BuildAsciiTable(company, location, device, ip, alertType, timestamp, detail)
+	_, emoji, _, hexColor := GetAlertSeverity(alertType)
+
+	locDisplay := location
+	if locDisplay == "" {
+		locDisplay = "Merkez Sistem Odası"
+	}
+
+	payload := map[string]interface{}{
+		"attachments": []map[string]interface{}{
+			{
+				"color": hexColor,
+				"title": fmt.Sprintf("%s [ALERT - GNNWATCHTOWER] %s", emoji, alertType),
+				"text":  fmt.Sprintf("```\n%s\n```", table),
+				"fields": []map[string]interface{}{
+					{"title": "Müşteri", "value": company, "short": true},
+					{"title": "Lokasyon", "value": locDisplay, "short": true},
+					{"title": "Cihaz Adı", "value": device, "short": true},
+					{"title": "IP Adresi", "value": ip, "short": true},
+					{"title": "Durum", "value": alertType, "short": true},
+					{"title": "Zaman", "value": timestamp, "short": true},
+				},
+				"footer": fmt.Sprintf("GNNwatchtower Enterprise Appliance v%s • %s", version.Get(), company),
 			},
 		},
 	}
@@ -224,16 +356,22 @@ func DispatchAlert(deviceName, ip, alertType, detail string) {
 		log.Printf("[Alert Engine] Telegram atlandı: Bot token ve Chat ID mevcut fakat 'telegram_enabled' ayarı kapalı (false).")
 	}
 
-	// 3. Discord Webhook Integration
+	// 3. Discord / Slack Webhook Integration
 	if discEnabled && settings["discord_webhook_url"] != "" {
-		discMsg := FormatDiscordAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
+		webhookURL := settings["discord_webhook_url"]
+		var webhookMsg string
+		if strings.Contains(webhookURL, "hooks.slack.com") {
+			webhookMsg = FormatSlackAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
+		} else {
+			webhookMsg = FormatDiscordAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
+		}
 		go func() {
-			if err := SendDiscord(settings["discord_webhook_url"], discMsg); err != nil {
-				log.Printf("[Alert Engine] Discord bildirim gönderim hatası (%s / %s): %v", deviceName, ip, err)
+			if err := SendDiscord(webhookURL, webhookMsg); err != nil {
+				log.Printf("[Alert Engine] Webhook bildirim gönderim hatası (%s / %s): %v", deviceName, ip, err)
 			}
 		}()
 	} else if settings["discord_webhook_url"] != "" && !discEnabled {
-		log.Printf("[Alert Engine] Discord atlandı: Webhook URL mevcut fakat 'discord_enabled' ayarı kapalı (false).")
+		log.Printf("[Alert Engine] Discord / Slack atlandı: Webhook URL mevcut fakat 'discord_enabled' ayarı kapalı (false).")
 	}
 }
 
@@ -287,6 +425,8 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 		location = "Merkez Sistem Odası"
 	}
 
+	_, emoji, _, hexColor := GetAlertSeverity(alertType)
+
 	escComp := html.EscapeString(company)
 	escLoc := html.EscapeString(location)
 	escType := html.EscapeString(alertType)
@@ -295,25 +435,56 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 	escTime := html.EscapeString(timestamp)
 	escDetail := html.EscapeString(detail)
 
-	subject := fmt.Sprintf("[%s] [%s] %s (%s)", company, alertType, devName, ip)
+	subject := fmt.Sprintf("%s [ALERT - GNNWATCHTOWER] %s — %s (%s)", emoji, alertType, devName, ip)
+
+	detailRow := ""
+	if escDetail != "" {
+		detailRow = fmt.Sprintf(`
+				<tr>
+					<td style="padding: 10px 14px; font-weight: 600; color: #475569; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; vertical-align: top; width: 120px;">Detay</td>
+					<td style="padding: 10px 14px; color: #0f172a; border-bottom: 1px solid #e2e8f0;">%s</td>
+				</tr>`, escDetail)
+	}
+
 	htmlBody := fmt.Sprintf(`
-		<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 6px; background-color: #ffffff;">
-			<div style="border-bottom: 2px solid #0284c7; padding-bottom: 10px; margin-bottom: 20px;">
-				<h2 style="color: #0f172a; margin: 0; font-size: 20px;">GNNwatchtower Altyapı Bildirimi</h2>
-				<p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Altyapı İzleme ve Olay Yönetim Sistemi</p>
+		<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-top: 4px solid %s; border-radius: 8px; background-color: #ffffff;">
+			<div style="border-bottom: 1px solid #e2e8f0; padding-bottom: 14px; margin-bottom: 18px;">
+				<h2 style="color: #0f172a; margin: 0; font-size: 19px; font-weight: 700;">%s [ALERT - GNNWATCHTOWER]</h2>
+				<p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Altyapı ve Sistem Olay Bildirimi</p>
 			</div>
-			<div style="background-color: #f8fafc; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
-				<p style="margin: 6px 0; font-size: 14px;"><strong>Müşteri:</strong> <span style="color: #0284c7; font-weight: bold;">%s</span></p>
-				<p style="margin: 6px 0; font-size: 14px;"><strong>Lokasyon:</strong> %s</p>
-				<p style="margin: 6px 0; font-size: 14px;"><strong>Olay Tipi:</strong> <span style="color: #dc2626; font-weight: bold;">%s</span></p>
-				<p style="margin: 6px 0; font-size: 14px;"><strong>Cihaz Adı:</strong> %s</p>
-				<p style="margin: 6px 0; font-size: 14px;"><strong>IP Adresi:</strong> %s</p>
-				<p style="margin: 6px 0; font-size: 14px;"><strong>Zaman:</strong> %s</p>
-				<p style="margin: 6px 0; font-size: 14px;"><strong>Detay:</strong> %s</p>
+			<div style="margin-bottom: 16px;">
+				<span style="display: inline-block; background-color: %s; color: #ffffff; padding: 4px 12px; border-radius: 9999px; font-weight: 600; font-size: 13px;">%s %s</span>
 			</div>
-			<p style="color: #94a3b8; font-size: 12px; margin: 0;">Bu e-posta GNNwatchtower v%s tarafından otomatik olarak oluşturulmuştur.</p>
+			<table style="width: 100%%; border-collapse: collapse; font-size: 14px; margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
+				<tr>
+					<td style="padding: 10px 14px; font-weight: 600; color: #475569; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; width: 120px;">Müşteri</td>
+					<td style="padding: 10px 14px; color: #0f172a; font-weight: 600; border-bottom: 1px solid #e2e8f0;">%s</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px 14px; font-weight: 600; color: #475569; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">Lokasyon</td>
+					<td style="padding: 10px 14px; color: #0f172a; border-bottom: 1px solid #e2e8f0;">%s</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px 14px; font-weight: 600; color: #475569; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">Cihaz Adı</td>
+					<td style="padding: 10px 14px; color: #0f172a; font-weight: 600; border-bottom: 1px solid #e2e8f0;">%s</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px 14px; font-weight: 600; color: #475569; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">IP Adresi</td>
+					<td style="padding: 10px 14px; color: #0f172a; font-family: monospace; border-bottom: 1px solid #e2e8f0;">%s</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px 14px; font-weight: 600; color: #475569; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">Durum</td>
+					<td style="padding: 10px 14px; color: %s; font-weight: 700; border-bottom: 1px solid #e2e8f0;">%s</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px 14px; font-weight: 600; color: #475569; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">Zaman</td>
+					<td style="padding: 10px 14px; color: #0f172a; border-bottom: 1px solid #e2e8f0;">%s</td>
+				</tr>
+				%s
+			</table>
+			<p style="color: #94a3b8; font-size: 12px; margin: 0;">Bu e-posta GNNwatchtower Enterprise Appliance v%s tarafından otomatik olarak oluşturulmuştur.</p>
 		</div>
-	`, escComp, escLoc, escType, escDev, escIP, escTime, escDetail, version.Get())
+	`, hexColor, emoji, hexColor, emoji, escType, escComp, escLoc, escDev, escIP, hexColor, escType, escTime, detailRow, version.Get())
 
 	payload := map[string]interface{}{
 		"sender": map[string]string{
