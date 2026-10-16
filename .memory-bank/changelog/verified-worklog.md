@@ -1,5 +1,17 @@
 # Verified Worklog
 
+## [2026-10-16] - Modern Dark NOC Frontend Design Restoration
+
+- Restored the dark NOC visual identity across the entire frontend application, purging bloated `.wt-*` styles from `frontend/src/assets/main.css` and reinstating pure Tailwind CSS standards.
+- Reconstructed `TopBar.vue` with live cluster telemetry indicators (online nodes LED, gateway ICMP latency, reachability percentage, refresh timestamp), search input, notification bell, and operator dropdown.
+- Realigned `Sidebar.vue` with hierarchical navigation sections (`İzleme Merkezi`, `Yönetim`), real category counts, and live bottom gateway monitor.
+- Restored explicit `#ID` columns across all tables (`ServerTable.vue`, `WebsiteTable.vue`, `IpDeviceTable.vue`).
+- Added mini visual progress gauges for CPU, RAM, and Disk to `ServerTable.vue`.
+- Elevated `TelemetryInspector.vue` and `AddDeviceModal.vue` with sleek dark cards, clear input formatting, and error feedback.
+- Successfully built frontend into `backend/cmd/server/dist/` and passed all device policy tests.
+
+
+
 ## [2026-10-16] - Governing No-Additional-Attack-Surface Rule
 
 - Recorded the operator's explicit priority: monitoring must not add or expand attack surface, even at the cost of NAS/ESXi compatibility and telemetry coverage.
