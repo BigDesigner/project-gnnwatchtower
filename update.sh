@@ -62,60 +62,7 @@ echo '[2/5] Mevcut ajanlarin imzali gecis guncellemesi hazirlaniyor.'
 AGENT_COUNT=0
 # Only an already TLS-enabled fleet can receive an automatic remote trust transition.
 # Unknown legacy HTTP trust must be repaired through the authenticated installer.
-if grep -Eq '^TLS_ENABLED=(true|1)
-if [ "$AGENT_COUNT" -gt 0 ]; then
-    echo "$AGENT_COUNT aktif ajana guncelleme sunuldu; 45 saniyelik gecis araligi bekleniyor."
-    sleep 45
-fi
-# Snapshot only after clean stop; never copy a live SQLite main file in isolation.
-echo '[3/5] Servis durduruluyor ve tutarli yedek aliniyor.'
-mkdir -p "$BACKUP_DIR"
-chmod 700 "$BACKUP_DIR"
-cp "$INSTALL_DIR/.env" "$BACKUP_DIR/environment"
-cp "$INSTALL_DIR/gnnwatchtower" "$BACKUP_DIR/gnnwatchtower"
-cp "$INSTALL_DIR/VERSION" "$BACKUP_DIR/VERSION" 2>/dev/null || true
-if [ -f /etc/systemd/system/gnnwatchtower.service.d/security.conf ]; then cp /etc/systemd/system/gnnwatchtower.service.d/security.conf "$BACKUP_DIR/security.conf"; fi
-bash "$SOURCE_DIR/scripts/configure-tls.sh"
-systemctl stop gnnwatchtower
-STOPPED=1
-cp -a "$INSTALL_DIR/data" "$BACKUP_DIR/data"
-echo '[4/5] Sunucu ve yetkiler guncelleniyor.'
-install -m 755 "$BUILD_DIR/bin/gnnwatchtower" "$INSTALL_DIR/gnnwatchtower.new"
-mv -f "$INSTALL_DIR/gnnwatchtower.new" "$INSTALL_DIR/gnnwatchtower"
-SWAPPED=1
-cp "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
-bash "$SOURCE_DIR/scripts/harden-collector.sh"
-if [ -d /opt/gnnwatchtower-agent ]; then
-    systemctl stop gnnwatchtower-agent 2>/dev/null || true
-    install -m 755 "$BUILD_DIR/bin/gnnwatchtower-agent" /opt/gnnwatchtower-agent/gnnwatchtower-agent
-fi
-systemctl daemon-reload
-systemctl restart gnnwatchtower
-# Check actual HTTPS readiness using this appliance's certificate; never disable verification.
-echo '[5/5] HTTPS hazirligi kontrol ediliyor.'
-BIND_ADDRESS=$(sed -n 's/^BIND_ADDRESS=//p' "$INSTALL_DIR/.env" | tail -1)
-PORT=$(sed -n 's/^SERVER_PORT=//p' "$INSTALL_DIR/.env" | tail -1); PORT=${PORT:-3800}
-CERT=$(sed -n 's/^TLS_CERT_FILE=//p' "$INSTALL_DIR/.env" | tail -1); CERT=${CERT:-$INSTALL_DIR/data/cert.pem}
-HEALTH_ADDRESS=$BIND_ADDRESS
-case "$HEALTH_ADDRESS" in 0.0.0.0|::) HEALTH_ADDRESS=127.0.0.1;; esac
-case "$HEALTH_ADDRESS" in *:*) HEALTH_ADDRESS="[$HEALTH_ADDRESS]";; esac
-READY=0
-for attempt in $(seq 1 15); do
-    if curl --noproxy '*' --cacert "$CERT" --connect-timeout 2 --max-time 3 -fsS "https://$HEALTH_ADDRESS:$PORT/api/health" >/dev/null 2>&1; then READY=1; break; fi
-    sleep 1
-done
-if [ "$READY" != 1 ]; then echo '[HATA] HTTPS hazir olmadi.'; exit 1; fi
-STOPPED=0
-if [ -d /opt/gnnwatchtower-agent ]; then
-    install -m 600 "$CERT" /opt/gnnwatchtower-agent/server-cert.pem
-    systemctl start gnnwatchtower-agent 2>/dev/null || true
-fi
-PANEL_ADDRESS=$BIND_ADDRESS
-case "$PANEL_ADDRESS" in 0.0.0.0|::) PANEL_ADDRESS=$(hostname -I | awk '{print $1}');; esac
-printf '\nGuncellendi: %s\nPanel: https://%s:%s\nYedek: %s\n' "$APP_VERSION" "$PANEL_ADDRESS" "$PORT" "$BACKUP_DIR"
-echo 'Ajan komutlari: Ajan Ozeti > Ajan Dagitimi. Cevrimdisi veya imza anahtari eksik eski ajanlarda paneldeki kurulum komutunu yeniden calistirin.'
-if command -v openssl >/dev/null 2>&1; then openssl x509 -in "$CERT" -noout -fingerprint -sha256; fi
- "$INSTALL_DIR/.env"; then
+if grep -Eq '^TLS_ENABLED=(true|1)$' "$INSTALL_DIR/.env"; then
     AGENT_COUNT=$("$BUILD_DIR/bin/gnnwatchtower" -prepare-agent-migration -migration-db "$INSTALL_DIR/data/gnnwatchtower.db")
 else
     echo 'Eski HTTP ajanlari: sunucu guncellemesinden sonra paneldeki sertifika iceren kurulum komutunu yeniden calistirin.'
