@@ -34,6 +34,12 @@
           </button>
         </div>
 
+        <div class="rounded border border-[#283142] bg-[#0c0e12] p-3 text-[11px] text-txt-secondary leading-relaxed">
+          <p class="font-semibold text-txt-primary mb-1">Komut neden Base64 biçiminde?</p>
+          <p>Kurulum betiği ve uygulamaya özel sertifika bilgileri, kopyalama sırasında satır ve tırnak hataları oluşmaması için Base64 biçiminde tek komuta dönüştürülür. Base64 şifreleme değildir; komut bu metni çözüp kurulum betiğini çalıştırır.</p>
+          <p class="mt-1.5">Betik ajanı HTTPS üzerinden indirir, dosyanın SHA-256 özetini doğrular ve servisi kurar veya günceller. Komut kayıt anahtarı içerir; yalnızca yetkili operatörlerle paylaşın.</p>
+        </div>
+
         <!-- Deployment Method Tabs -->
         <div class="flex items-center gap-1 border-b border-[#232936] text-[11px]">
           <button 
@@ -78,7 +84,7 @@
             {{ windowsCmd || installError || 'Kurulum hazırlanıyor…' }}
           </div>
           <p class="text-[10px] text-txt-muted">
-            * Dosya tabanlı indirme yürütür, hafıza içi (`iex`) çalıştırmaz ve doğrudan yerel Windows Hizmeti (SCM) olarak kaydeder.
+            Kurulum betiği PowerShell’de çalışır; ajan dosyası diske indirilir ve Windows hizmeti olarak kaydedilir.
           </p>
         </div>
 
