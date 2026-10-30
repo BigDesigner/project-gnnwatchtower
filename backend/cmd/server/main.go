@@ -203,7 +203,7 @@ func main() {
 	router := api.SetupRouter(webFS)
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%s", port),
+		Addr:         net.JoinHostPort(bindAddress(), port),
 		Handler:      router,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
@@ -211,7 +211,7 @@ func main() {
 	}
 
 	// 7. Start HTTP / HTTPS Server in background
-	tlsEnabled := os.Getenv("TLS_ENABLED") == "true" || os.Getenv("TLS_ENABLED") == "1"
+	tlsEnabled := true
 	certFile := os.Getenv("TLS_CERT_FILE")
 	keyFile := os.Getenv("TLS_KEY_FILE")
 
@@ -233,7 +233,7 @@ func main() {
 		}()
 	} else {
 		go func() {
-			log.Printf("[GNNwatchtower Appliance] Dashboard & API listening on http://0.0.0.0:%s", port)
+			log.Printf("[GNNwatchtower Appliance] Dashboard & API listening on http://localhost:%s", port)
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("[FATAL] HTTP Server failed: %v", err)
 			}
@@ -260,4 +260,11 @@ func main() {
 	}
 
 	log.Println("[GNNwatchtower] Appliance exited cleanly.")
+}
+
+func bindAddress() string {
+	if value := os.Getenv("BIND_ADDRESS"); value != "" {
+		return value
+	}
+	return "127.0.0.1"
 }

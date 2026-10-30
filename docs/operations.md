@@ -1,3 +1,5 @@
+> 0.4.12: HTTP ve eski root/NET_ADMIN dağıtım açıklamaları artık geçerli değildir. Güncel kurulum ve HTTPS geçişi için [güvenlik geçiş belgesini](security-upgrade-0.4.12.md) kullanın.
+
 # Ayrıntılı kullanım ve işletim notları
 
 Günlük kurulum, güncelleme ve servis komutları için [README](../README.md) dosyasına bakın.

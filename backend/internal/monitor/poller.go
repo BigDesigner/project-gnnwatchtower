@@ -15,6 +15,7 @@ import (
 	"gnnwatchtower/internal/database"
 	"gnnwatchtower/internal/incident"
 	"gnnwatchtower/internal/models"
+	"gnnwatchtower/internal/netpolicy"
 )
 
 // Poller manages continuous device & service checks
@@ -313,7 +314,8 @@ func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, fl
 	}
 
 	client := &http.Client{
-		Timeout: timeout,
+		Transport: netpolicy.Transport(),
+		Timeout:   timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
@@ -328,18 +330,6 @@ func checkWebsiteReachability(targetURL string, timeout time.Duration) (bool, fl
 	start := time.Now()
 	resp, err := client.Get(urlStr)
 	if err != nil {
-		// If https failed and URL was plain host, fallback to http
-		if !strings.HasPrefix(targetURL, "https://") && !strings.HasPrefix(targetURL, "http://") {
-			fallbackURL, errFallback := url.Parse("http://" + targetURL)
-			if errFallback == nil && !isDisallowedHostOrIP(fallbackURL.Hostname()) {
-				respHttp, errHttp := client.Get("http://" + targetURL)
-				if errHttp == nil {
-					defer respHttp.Body.Close()
-					latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-					return respHttp.StatusCode < 500, latencyMs, respHttp.StatusCode, "HTTP"
-				}
-			}
-		}
 		return false, 0, 0, ""
 	}
 	defer resp.Body.Close()

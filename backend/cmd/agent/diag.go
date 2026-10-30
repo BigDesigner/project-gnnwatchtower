@@ -26,7 +26,7 @@ func runDiagnostics(serverURL, token string) {
 	}
 	if targetURL == "" || targetURL == "http://127.0.0.1:3800" {
 		fmt.Println("[!] GNNwatchtower Appliance adresi yapilandirilmamis.")
-		fmt.Print("    Lutfen Sunucu Adresini Giriniz (Orn: http://10.38.1.13:3800): ")
+		fmt.Print("    Lutfen Sunucu Adresini Giriniz (Orn: https://watchtower.example:3800): ")
 		scanner := bufio.NewScanner(os.Stdin)
 		if scanner.Scan() {
 			val := strings.TrimSpace(scanner.Text())
@@ -111,7 +111,7 @@ func runDiagnostics(serverURL, token string) {
 			time.Sleep(2 * time.Second)
 		case "6":
 			fmt.Printf("\n[i] Mevcut Sunucu Adresi: %s\n", targetURL)
-			fmt.Print("    Yeni Sunucu Adresini Giriniz (Orn: http://10.38.1.13:3800): ")
+			fmt.Print("    Yeni Sunucu Adresini Giriniz (Orn: https://watchtower.example:3800): ")
 			if scanner.Scan() {
 				val := strings.TrimSpace(scanner.Text())
 				if val != "" {
@@ -214,7 +214,7 @@ func printDiagnosticReport(serverURL, token string) {
 
 	// 4. API Health Endpoint Probe
 	healthURL := fmt.Sprintf("%s/api/health", strings.TrimRight(serverURL, "/"))
-	client := &http.Client{Timeout: 4 * time.Second}
+	client := &http.Client{Transport: tlsOnlyTransport{}, CheckRedirect: sameAgentOrigin, Timeout: 4 * time.Second}
 	hResp, hErr := client.Get(healthURL)
 	if hErr != nil {
 		fmt.Printf("[✗] REST API Saglik Kontrol: HATA (%v)\n", hErr)

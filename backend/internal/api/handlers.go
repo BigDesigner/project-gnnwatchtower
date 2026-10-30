@@ -741,7 +741,10 @@ func AgentEnroll(c *gin.Context) {
 	}
 
 	tokenBytes := make([]byte, 32)
-	_, _ = rand.Read(tokenBytes)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		c.JSON(500, gin.H{"error": "Anahtar üretilemedi"})
+		return
+	}
 	agentToken := hex.EncodeToString(tokenBytes)
 
 	name := strings.TrimSpace(req.Hostname)
@@ -994,7 +997,7 @@ func AgentHeartbeat(c *gin.Context) {
 	// Normal heartbeat update
 	agentVer := report.AgentVersion
 	if agentVer == "" {
-		agentVer = "0.4.2"
+		agentVer = "unknown"
 	}
 	_, _ = database.DB.Exec(`
 		UPDATE devices 
@@ -1196,11 +1199,11 @@ func getBinaryChecksum(platform string) string {
 
 // GenerateLinuxAgentScript outputs bash script for 1-click curl install on Ubuntu/Debian
 func GenerateLinuxAgentScript(c *gin.Context) {
-	proto := c.GetHeader("X-Forwarded-Proto")
-	scheme := "http"
-	if proto == "https" || c.Request.TLS != nil {
-		scheme = "https"
+	if c.Request.TLS == nil {
+		c.JSON(426, gin.H{"error": "Ajan kurulumu için doğrulanmış HTTPS gereklidir"})
+		return
 	}
+	scheme := "https"
 
 	rawHost := c.Request.Host
 	cleanHost := strings.Map(func(r rune) rune {
@@ -1262,7 +1265,7 @@ sleep 1
 
 echo "[GNNwatchtower] Ajan ikili dosyasi indiriliyor..."
 rm -f "$BIN_TARGET.tmp"
-if ! curl -fsSL "$SERVER_URL/api/agent/download/linux" -o "$BIN_TARGET.tmp"; then
+if ! curl --proto '=https' --proto-redir '=https' -fsSL "$SERVER_URL/api/agent/download/linux" -o "$BIN_TARGET.tmp"; then
     echo "[HATA] Ajan dosyasi sunucudan indirilemedi! Lutfen sunucu erisimini kontrol ediniz."
     exit 1
 fi
@@ -1283,11 +1286,11 @@ echo "[GNNwatchtower] Ajan basariyla kuruldu, otomatik olarak kaydoldu (Auto-Enr
 
 // GenerateWindowsAgentScript outputs enterprise powershell script for Windows Server
 func GenerateWindowsAgentScript(c *gin.Context) {
-	proto := c.GetHeader("X-Forwarded-Proto")
-	scheme := "http"
-	if proto == "https" || c.Request.TLS != nil {
-		scheme = "https"
+	if c.Request.TLS == nil {
+		c.JSON(426, gin.H{"error": "Ajan kurulumu için doğrulanmış HTTPS gereklidir"})
+		return
 	}
+	scheme := "https"
 
 	rawHost := c.Request.Host
 	cleanHost := strings.Map(func(r rune) rune {

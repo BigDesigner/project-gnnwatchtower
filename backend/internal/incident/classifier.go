@@ -222,7 +222,7 @@ func FormatTelegramAlert(company, location, device, ip, alertType, detail, times
 	escapedTable := html.EscapeString(table)
 
 	return fmt.Sprintf(
-`<b>%s [ALERT - GNNWATCHTOWER] %s</b>
+		`<b>%s [ALERT - GNNWATCHTOWER] %s</b>
 
 <pre>
 %s
@@ -308,6 +308,9 @@ func DispatchAlert(deviceName, ip, alertType, detail string) {
 		return
 	}
 
+	if !permitAlert(ip + "\x00" + alertType) {
+		return
+	}
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 
 	// Read settings
@@ -330,7 +333,7 @@ func DispatchAlert(deviceName, ip, alertType, detail string) {
 
 	// 1. Brevo Email Integration
 	if brevoEnabled && settings["brevo_api_key"] != "" && settings["brevo_recipient_email"] != "" {
-		go func() {
+		enqueueAlert(func() {
 			if err := SendBrevoEmail(
 				settings["brevo_api_key"],
 				settings["brevo_sender_name"],
@@ -341,17 +344,17 @@ func DispatchAlert(deviceName, ip, alertType, detail string) {
 			); err != nil {
 				log.Printf("[Alert Engine] Brevo bildirim gönderim hatası: %v", err)
 			}
-		}()
+		})
 	}
 
 	// 2. Telegram Integration
 	if tgEnabled && settings["telegram_bot_token"] != "" && settings["telegram_chat_id"] != "" {
 		tgMsg := FormatTelegramAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
-		go func() {
+		enqueueAlert(func() {
 			if err := SendTelegram(settings["telegram_bot_token"], settings["telegram_chat_id"], tgMsg); err != nil {
 				log.Printf("[Alert Engine] Telegram bildirim gönderim hatası (%s / %s): %v", deviceName, ip, err)
 			}
-		}()
+		})
 	} else if settings["telegram_bot_token"] != "" && settings["telegram_chat_id"] != "" && !tgEnabled {
 		log.Printf("[Alert Engine] Telegram atlandı: Bot token ve Chat ID mevcut fakat 'telegram_enabled' ayarı kapalı (false).")
 	}
@@ -365,11 +368,11 @@ func DispatchAlert(deviceName, ip, alertType, detail string) {
 		} else {
 			webhookMsg = FormatDiscordAlert(companyName, location, deviceName, ip, alertType, detail, timestamp)
 		}
-		go func() {
+		enqueueAlert(func() {
 			if err := SendDiscord(webhookURL, webhookMsg); err != nil {
 				log.Printf("[Alert Engine] Webhook bildirim gönderim hatası (%s / %s): %v", deviceName, ip, err)
 			}
-		}()
+		})
 	} else if settings["discord_webhook_url"] != "" && !discEnabled {
 		log.Printf("[Alert Engine] Discord / Slack atlandı: Webhook URL mevcut fakat 'discord_enabled' ayarı kapalı (false).")
 	}
@@ -515,7 +518,7 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 	req.Header.Set("api-key", apiKey)
 	req.Header.Set("content-type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := notificationClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[Alert Engine] Brevo email dispatch error: %v", err)
@@ -524,7 +527,7 @@ func SendBrevoEmail(apiKey, senderName, senderEmail, recipientEmail, devName, ip
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 		log.Printf("[Alert Engine] Brevo email API error (%d): %s", resp.StatusCode, string(respBody))
 		return fmt.Errorf("Brevo API Hatası (%d): %s", resp.StatusCode, string(respBody))
 	}
@@ -553,7 +556,7 @@ func SendTelegram(token, chatID, text string) error {
 		"parse_mode": "HTML",
 	}
 	body, _ := json.Marshal(payload)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := notificationClient()
 	resp, err := client.Post(apiURL, "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		log.Printf("[Alert Engine] Telegram HTTP error: %v", err)
@@ -561,7 +564,7 @@ func SendTelegram(token, chatID, text string) error {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[Alert Engine] Telegram API error (%d): %s", resp.StatusCode, string(respBody))
 		var tgErr struct {
@@ -596,7 +599,7 @@ func SendDiscord(webhookURL, payloadOrText string) error {
 		body, _ = json.Marshal(payload)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := notificationClient()
 	resp, err := client.Post(webhookURL, "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		log.Printf("[Alert Engine] Discord HTTP error: %v", err)
@@ -605,7 +608,7 @@ func SendDiscord(webhookURL, payloadOrText string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 		log.Printf("[Alert Engine] Discord Webhook error (%d): %s", resp.StatusCode, string(respBody))
 		return fmt.Errorf("Discord Webhook Hatası (%d): %s", resp.StatusCode, string(respBody))
 	}

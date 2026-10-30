@@ -91,7 +91,7 @@ else
     echo -e "${BLUE}GNNwatchtower kaynak kodlari GitHub'dan klonlaniyor ($BRANCH)...${NC}"
     git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$BUILD_DIR"
     
-    APP_VERSION=$(cat "$BUILD_DIR/VERSION" 2>/dev/null || cat VERSION 2>/dev/null || echo "0.4.2")
+    APP_VERSION=$(cat "$BUILD_DIR/VERSION" 2>/dev/null || cat VERSION 2>/dev/null || echo "0.4.12")
     cp "$BUILD_DIR/VERSION" "$INSTALL_DIR/VERSION" 2>/dev/null || true
 
     echo -e "${CYAN}Gömülü Web UI ile birlikte tek ikili dosya derleniyor (v${APP_VERSION})...${NC}"
@@ -115,17 +115,21 @@ chmod +x "$BIN_TARGET"
 # 3. Ortam Değişkeni (.env) Dosyası
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     echo -e "${BLUE}[3/5] .env yapilandirma dosyasi olusturuluyor...${NC}"
-    JWT_SECRET=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32 || date +%s%N | sha256sum | head -c 32)
     cat <<EOF > "$INSTALL_DIR/.env"
 SERVER_PORT=3800
 DB_PATH=/opt/gnnwatchtower/data/gnnwatchtower.db
 GIN_MODE=release
-JWT_SECRET=${JWT_SECRET}
+TLS_ENABLED=true
+BIND_ADDRESS=127.0.0.1
 DEFAULT_CHECK_INTERVAL=15
 EOF
     chmod 600 "$INSTALL_DIR/.env"
 fi
 
+# Dedicated collector identity; only mutable directories are writable.
+id -u gnnwatchtower >/dev/null 2>&1 || useradd --system --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin gnnwatchtower
+chown root:gnnwatchtower "$INSTALL_DIR"
+chown -R gnnwatchtower:gnnwatchtower "$INSTALL_DIR/data" "$INSTALL_DIR/backups" "$INSTALL_DIR/logs"
 # 4. Systemd Servisini Oluştur
 echo -e "${BLUE}[4/5] Systemd servisi tanimlaniyor...${NC}"
 cat <<EOF > "$SERVICE_FILE"
@@ -136,7 +140,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=gnnwatchtower
+Group=gnnwatchtower
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateTmp=true
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=-${INSTALL_DIR}/.env
 ExecStart=${BIN_TARGET}
@@ -147,7 +155,7 @@ LimitNOFILE=65535
 # Guvenlik İzolasyon Sertlestirmesi
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=${INSTALL_DIR}
+ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/backups ${INSTALL_DIR}/logs
 
 [Install]
 WantedBy=multi-user.target
@@ -157,11 +165,7 @@ systemctl daemon-reload
 systemctl enable gnnwatchtower
 systemctl restart gnnwatchtower
 
-# 5. Güvenlik Duvarı (UFW)
-if command -v ufw >/dev/null 2>&1; then
-    ufw allow 3800/tcp comment 'GNNwatchtower Monitoring Appliance' >/dev/null 2>&1 || true
-fi
-
+# No firewall rules are added.
 # 6. Bilgilendirme
 SERVER_IP=$(hostname -I | awk '{print $1}' || echo "SUNUCU_IP")
 
@@ -169,8 +173,8 @@ echo ""
 echo -e "${GREEN}=================================================================${NC}"
 echo -e "${GREEN}  ✓ GNNwatchtower Kurulumu Basariyla Tamamlandi!                 ${NC}"
 echo -e "${GREEN}=================================================================${NC}"
-echo -e "Yonetim Paneli Adresi: ${CYAN}http://${SERVER_IP}:3800${NC}"
-echo -e "Ilk Giris Bilgileri  : Kullanici Adi: ${CYAN}admin${NC} | Parola: ${CYAN}admin${NC} (Ilk giriste parola degisimi zorunludur)"
+echo -e "Yonetim Paneli Adresi: ${CYAN}https://localhost:3800${NC}"
+echo "Ilk parola: sudo cat /opt/gnnwatchtower/data/initial_admin_password.txt"
 echo -e "Durum Kontrolu       : ${BLUE}systemctl status gnnwatchtower${NC}"
 echo -e "Canli Gunluk Kayit   : ${BLUE}journalctl -u gnnwatchtower -f${NC}"
 echo -e "${GREEN}=================================================================${NC}"

@@ -35,9 +35,11 @@ func init() {
 			sessionsMu.Unlock()
 
 			attemptsMu.Lock()
-			for ip, att := range loginAttempts {
-				if now.After(att.lockedUntil) && att.failedCount > 0 {
-					delete(loginAttempts, ip)
+			for _, entries := range []map[string]*loginAttempt{loginAttempts, userAttempts} {
+				for ip, att := range entries {
+					if now.After(att.lockedUntil) && att.failedCount > 0 {
+						delete(entries, ip)
+					}
 				}
 			}
 			attemptsMu.Unlock()
@@ -55,6 +57,7 @@ type sessionInfo struct {
 type loginAttempt struct {
 	failedCount int
 	lockedUntil time.Time
+	updatedAt   time.Time
 }
 
 var (
@@ -65,6 +68,13 @@ var (
 
 // Login handles operator login with rate limiting and transparent bcrypt migration
 func Login(c *gin.Context) {
+	select {
+	case loginSlots <- struct{}{}:
+		defer func() { <-loginSlots }()
+	default:
+		c.JSON(429, gin.H{"error": "Giriş kapasitesi dolu"})
+		return
+	}
 	ip := c.ClientIP()
 
 	var input struct {
@@ -77,7 +87,24 @@ func Login(c *gin.Context) {
 		return
 	}
 
+	if len(input.Username) > 128 || len(input.Password) > 72 {
+		c.JSON(400, gin.H{"error": "Geçersiz giriş uzunluğu"})
+		return
+	}
 	attemptsMu.Lock()
+	now := time.Now()
+	for _, entries := range []map[string]*loginAttempt{loginAttempts, userAttempts} {
+		for key, att := range entries {
+			if now.Sub(att.updatedAt) > 10*time.Minute && now.After(att.lockedUntil) {
+				delete(entries, key)
+			}
+		}
+	}
+	if (loginAttempts[ip] == nil && len(loginAttempts) >= 4096) || (userAttempts[input.Username] == nil && len(userAttempts) >= 4096) {
+		attemptsMu.Unlock()
+		c.JSON(429, gin.H{"error": "Giriş kapasitesi dolu"})
+		return
+	}
 	// Fix R04: Check IP attempt limit
 	if att, exists := loginAttempts[ip]; exists {
 		if time.Now().Before(att.lockedUntil) {
@@ -123,6 +150,7 @@ func Login(c *gin.Context) {
 			att = &loginAttempt{}
 			loginAttempts[ip] = att
 		}
+		att.updatedAt = time.Now()
 		att.failedCount++
 		if att.failedCount >= 5 {
 			att.lockedUntil = time.Now().Add(5 * time.Minute)
@@ -133,6 +161,7 @@ func Login(c *gin.Context) {
 			uAtt = &loginAttempt{}
 			userAttempts[input.Username] = uAtt
 		}
+		uAtt.updatedAt = time.Now()
 		uAtt.failedCount++
 		if uAtt.failedCount >= 5 {
 			uAtt.lockedUntil = time.Now().Add(5 * time.Minute)
@@ -165,10 +194,23 @@ func Login(c *gin.Context) {
 
 	// Generate session token
 	tokenBytes := make([]byte, 24)
-	_, _ = rand.Read(tokenBytes)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		c.JSON(500, gin.H{"error": "Oturum oluşturulamadı"})
+		return
+	}
 	token := hex.EncodeToString(tokenBytes)
 
 	sessionsMu.Lock()
+	for key, sess := range activeSessions {
+		if time.Now().After(sess.ExpiresAt) {
+			delete(activeSessions, key)
+		}
+	}
+	if len(activeSessions) >= 4096 {
+		sessionsMu.Unlock()
+		c.JSON(429, gin.H{"error": "Oturum kapasitesi dolu"})
+		return
+	}
 	activeSessions[token] = sessionInfo{
 		Username:           input.Username,
 		Role:               role,
@@ -271,7 +313,7 @@ func ChangePassword(c *gin.Context) {
 	}
 
 	// Clean up initial bootstrap password file if it exists
-	_ = os.Remove("./data/initial_admin_password.txt")
+	_ = os.Remove(database.BootstrapPasswordPath)
 
 	// Fix R08: Revoke all other active sessions for this user except current session
 	token := c.GetString("token")
@@ -341,3 +383,5 @@ func AuthMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+var loginSlots = make(chan struct{}, 8)

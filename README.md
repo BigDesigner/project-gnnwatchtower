@@ -1,6 +1,6 @@
 # GNNwatchtower
 
-[![Sürüm](https://img.shields.io/badge/version-0.4.10-blue)](VERSION)
+[![Sürüm](https://img.shields.io/badge/version-0.4.12-blue)](VERSION)
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8)](backend/go.mod)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D)](frontend/package.json)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57)](backend/internal/database/db.go)
@@ -17,11 +17,11 @@ Ubuntu 22.04 / 24.04 LTS:
 curl -sSL https://raw.githubusercontent.com/BigDesigner/project-gnnwatchtower/main/install.sh | sudo bash
 ```
 
-Panel: `http://SUNUCU_IP:3800`
+Panel varsayılanı: `https://localhost:3800`; uzaktan erişim için mevcut erişim kapsamını koruyarak `BIND_ADDRESS` ayarlayın.
 
-İlk giriş: `admin` / `admin`. İlk girişte parola değiştirilir.
+Kullanıcı: `admin`. İlk parola yerel `data/initial_admin_password.txt` dosyasındadır; ilk girişte değiştirilir.
 
-Kurulum betiği root yetkisiyle çalışır ve UFW varsa 3800/TCP için izin ekler. Müşteri ortamının erişim politikasına göre kullanın.
+Kurulum betiği yönetici yetkisi ister; servis ayrı `gnnwatchtower` hesabıyla çalışır. Firewall kuralı eklenmez.
 
 ## Güncelleme
 
@@ -111,3 +111,7 @@ Ağ keşfi kaldırılmıştır. NAS/ESXi izleme için ek yönetim servisi açıl
 ## Belgeler
 
 [Kaynaktan derleme, elle ajan kurulumu, yapılandırma ve sorun giderme](docs/operations.md) · [Güvenlik ilkesi](.memory-bank/adr/0006-no-additional-attack-surface.md) · [AGPL-3.0 lisansı](LICENSE)
+
+### 0.4.12 güvenlik geçişi
+
+HTTP bağlantıları artık kabul edilmez. Güncellemeden önce [HTTPS geçiş adımlarını](docs/security-upgrade-0.4.12.md) tamamlayın. İlk kurulum parolası: `sudo cat /opt/gnnwatchtower/data/initial_admin_password.txt`.

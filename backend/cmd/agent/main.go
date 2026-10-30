@@ -175,8 +175,9 @@ func loadSignerKey() ed25519.PublicKey {
 
 func saveSignerKey(pubKeyHex string) error {
 	k := strings.TrimSpace(pubKeyHex)
-	if k == "" {
-		return nil
+	decoded, err := hex.DecodeString(k)
+	if err != nil || len(decoded) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid Ed25519 public key")
 	}
 	keyPath := getSignerKeyPath()
 	dir := os.Getenv("ProgramFiles")
@@ -270,7 +271,7 @@ func autoEnroll(serverURL, enrollKey string) (string, error) {
 		req.Header.Set("X-Enrollment-Key", enrollKey)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Transport: tlsOnlyTransport{}, CheckRedirect: sameAgentOrigin, Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("kayit istegi gonderilemedi (%s): %w", enrollURL, err)
@@ -295,6 +296,9 @@ func autoEnroll(serverURL, enrollKey string) (string, error) {
 		return "", fmt.Errorf("sunucu bos token dondurdu")
 	}
 
+	if pinned := loadSignerKey(); pinned != nil && !strings.EqualFold(hex.EncodeToString(pinned), strings.TrimSpace(enrollResp.UpdatePublicKey)) {
+		return "", fmt.Errorf("signing key changed; explicit authenticated rotation required")
+	}
 	if enrollResp.UpdatePublicKey != "" {
 		if err := saveSignerKey(enrollResp.UpdatePublicKey); err != nil {
 			log.Printf("[UYARI] Ajan dogrulama acik anahtari (Signer Key) kaydedilemedi: %v", err)
@@ -313,11 +317,11 @@ func autoEnroll(serverURL, enrollKey string) (string, error) {
 }
 
 func main() {
-	serverURL := flag.String("server", "", "GNNwatchtower Appliance URL (Orn: http://10.38.1.13:3800)")
+	serverURL := flag.String("server", "", "GNNwatchtower Appliance URL (Orn: https://watchtower.example:3800)")
 	token := flag.String("token", "", "GNNwatchtower Agent Token (Opsiyonel, bos ise otomatik kayit yapilir)")
 	enrollKeyFlag := flag.String("enroll-key", "", "GNNwatchtower Ajan Kayıt Anahtarı (Agent Enrollment Key)")
 	signerKeyFlag := flag.String("signer-key", "", "GNNwatchtower Ajan Güncelleme Doğrulama Açık Anahtarı (Ed25519 Public Key)")
-	requireHTTPSFlag := flag.Bool("require-https", false, "Yalnızca şifrelenmiş HTTPS bağlantılarına izin verir")
+	requireHTTPSFlag := flag.Bool("require-https", true, "Yalnızca şifrelenmiş HTTPS bağlantılarına izin verir")
 	serviceCmd := flag.String("service", "", "Servis islemleri: install, uninstall, start, stop, restart, status, diag")
 	intervalSec := flag.Int("interval", 15, "Periyodik heartbeat araligi (saniye)")
 	showVersion := flag.Bool("version", false, "Ajan surum numarasini gosterir")
@@ -352,7 +356,8 @@ func main() {
 		resolvedServerURL = "http://127.0.0.1:3800"
 	}
 
-	if (*requireHTTPSFlag || os.Getenv("REQUIRE_HTTPS") == "true" || os.Getenv("REQUIRE_HTTPS") == "1") && strings.HasPrefix(strings.ToLower(resolvedServerURL), "http://") {
+	_ = requireHTTPSFlag
+	if (*serviceCmd == "" || *serviceCmd == "install") && !strings.HasPrefix(strings.ToLower(resolvedServerURL), "https://") {
 		log.Fatalf("[FATAL] Guvenlik ilkesi ihlali: -require-https aktif ancak sunucu adresi sifrelenmemis HTTP (%s) olarak belirtildi!", resolvedServerURL)
 	}
 
@@ -511,7 +516,7 @@ func sendHeartbeat(serverURL, token, hostname string) (*ServerHeartbeatResponse,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Agent-Token", token)
 
-	client := &http.Client{Timeout: 6 * time.Second}
+	client := &http.Client{Transport: tlsOnlyTransport{}, CheckRedirect: sameAgentOrigin, Timeout: 6 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
 		log.Printf("[UYARI] Heartbeat gonderilemedi (%s): %v", url, err)
@@ -566,7 +571,7 @@ func sendPreShutdown(serverURL, token, hostname, reason string) {
 	if req != nil {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Agent-Token", token)
-		client := &http.Client{Timeout: 3 * time.Second}
+		client := &http.Client{Transport: tlsOnlyTransport{}, CheckRedirect: sameAgentOrigin, Timeout: 3 * time.Second}
 		_, _ = client.Do(req)
 	}
 }
@@ -652,7 +657,7 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256, si
 	}
 
 	// Fix R03: Enforce mandatory Ed25519 digital signature verification!
-	// This proves authenticity independently of the transport channel, completely defeating HTTP MITM substitution!
+	// Signature trust depends on authenticated provisioning of the pinned key.
 	signerPubKey := loadSignerKey()
 	if signerPubKey == nil && strings.TrimSpace(updatePubKey) != "" {
 		log.Printf("[GNNwatchtower Agent] Yerel signer.pub anahtarı eksik, sunucu talimatındaki anahtar kaydediliyor...")
@@ -696,7 +701,7 @@ func performUpgrade(serverURL, token, targetVer, downloadURL, expectedSHA256, si
 	_ = os.Remove(tmpFile)
 
 	// Fix R03: Validate redirects to ensure download cannot be redirected to another domain
-	client := &http.Client{
+	client := &http.Client{Transport: tlsOnlyTransport{},
 		Timeout: 60 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if !strings.EqualFold(req.URL.Host, parsedServer.Host) || !strings.EqualFold(req.URL.Scheme, parsedServer.Scheme) {
@@ -834,7 +839,7 @@ func writeUpgradeMarker(targetVer string) {
 func fetchSignerKeyFromServer(serverURL string) string {
 	cleanServerURL := strings.TrimRight(serverURL, "/")
 	reqURL := cleanServerURL + "/api/agent/signer-key"
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Transport: tlsOnlyTransport{}, CheckRedirect: sameAgentOrigin, Timeout: 10 * time.Second}
 	resp, err := client.Get(reqURL)
 	if err != nil {
 		return ""
@@ -851,4 +856,3 @@ func fetchSignerKeyFromServer(serverURL string) string {
 	}
 	return strings.TrimSpace(data.PublicKey)
 }
-

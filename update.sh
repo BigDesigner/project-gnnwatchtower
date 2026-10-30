@@ -34,7 +34,18 @@ if [ ! -d "$INSTALL_DIR" ]; then
     exit 1
 fi
 
-# 2. Otomatik Guvenlik Yedegi (Veritabanı ve .env asla kaybolmaz)
+# Refuse an unprepared HTTP-to-HTTPS migration before stopping the service.
+if ! grep -q '^BIND_ADDRESS=.' "$INSTALL_DIR/.env"; then
+    echo "[HATA] Once mevcut yonetim adresini BIND_ADDRESS olarak acikca tanimlayin."
+    exit 1
+fi
+if ! grep -Eq '^TLS_ENABLED=(true|1)$' "$INSTALL_DIR/.env"; then
+    echo "[HATA] Once docs/security-upgrade-0.4.12.md HTTPS gecisini tamamlayin."
+    exit 1
+fi
+# Backup after a clean service stop, including WAL sidecars if present.
+systemctl stop gnnwatchtower
+
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="$INSTALL_DIR/backups"
 mkdir -p "$BACKUP_DIR"
@@ -42,6 +53,9 @@ mkdir -p "$BACKUP_DIR"
 if [ -f "$INSTALL_DIR/data/gnnwatchtower.db" ]; then
     echo -e "${BLUE}[1/4] Mevcut veritabani guvenle yedekleniyor: pre-update-${TIMESTAMP}.db...${NC}"
     cp "$INSTALL_DIR/data/gnnwatchtower.db" "$BACKUP_DIR/pre-update-${TIMESTAMP}.db"
+    for suffix in -wal -shm; do
+        if [ -f "$INSTALL_DIR/data/gnnwatchtower.db$suffix" ]; then cp "$INSTALL_DIR/data/gnnwatchtower.db$suffix" "$BACKUP_DIR/pre-update-${TIMESTAMP}.db$suffix"; fi
+    done
 fi
 
 if [ -f "$INSTALL_DIR/.env" ]; then
@@ -68,7 +82,7 @@ fi
 BUILD_DIR=$(mktemp -d -t gnnwatchtower-update-XXXXXX)
 git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$BUILD_DIR"
 
-APP_VERSION=$(cat "$BUILD_DIR/VERSION" 2>/dev/null || cat VERSION 2>/dev/null || echo "0.4.2")
+APP_VERSION=$(cat "$BUILD_DIR/VERSION" 2>/dev/null || cat VERSION 2>/dev/null || echo "0.4.12")
 cp "$BUILD_DIR/VERSION" "$INSTALL_DIR/VERSION" 2>/dev/null || true
 
 TEMP_BIN="$BUILD_DIR/gnnwatchtower"
@@ -85,6 +99,7 @@ chmod +x "$INSTALL_DIR/bin/gnnwatchtower-agent"
 
 # Binary'yi guvenle yerlestir
 install -m 755 "$TEMP_BIN" "$BIN_TARGET"
+bash "$BUILD_DIR/scripts/harden-collector.sh"
 rm -rf "$BUILD_DIR"
 
 # .env icinde DB_PATH tanimini garantiye al
@@ -96,10 +111,6 @@ fi
 if [ -d "/opt/gnnwatchtower-agent" ]; then
     systemctl stop gnnwatchtower-agent 2>/dev/null || true
     install -m 755 "$INSTALL_DIR/bin/gnnwatchtower-agent" "/opt/gnnwatchtower-agent/gnnwatchtower-agent"
-    if [ -f "$INSTALL_DIR/data/gnnwatchtower.db" ]; then
-        python3 -c "import sqlite3; con=sqlite3.connect('$INSTALL_DIR/data/gnnwatchtower.db'); r=con.execute('SELECT value FROM system_settings WHERE key=\"agent_update_public_key\"').fetchone(); open('/opt/gnnwatchtower-agent/signer.pub', 'w').write(r[0]) if r and r[0] else None; con.close()" 2>/dev/null || true
-        chmod 644 /opt/gnnwatchtower-agent/signer.pub 2>/dev/null || true
-    fi
     systemctl start gnnwatchtower-agent 2>/dev/null || true
 fi
 
@@ -116,7 +127,7 @@ if systemctl is-active --quiet gnnwatchtower; then
     echo -e "${GREEN}  ✓ GNNwatchtower Basariyla Guncellendi! (v${APP_VERSION})      ${NC}"
     echo -e "${GREEN}  ✓ Tum ayarlar, cihazlar ve veritabani korundu.                ${NC}"
     echo -e "${GREEN}=================================================================${NC}"
-    echo -e "Yonetim Paneli: ${CYAN}http://${SERVER_IP}:3800${NC}"
+    echo -e "Yonetim Paneli: ${CYAN}https://${SERVER_IP}:3800${NC}"
     echo -e "Yedek Konumu  : ${BLUE}$BACKUP_DIR/pre-update-${TIMESTAMP}.db${NC}"
     echo -e "Servis Durumu : ${GREEN}Aktif (Running)${NC}"
     echo -e "${GREEN}=================================================================${NC}"

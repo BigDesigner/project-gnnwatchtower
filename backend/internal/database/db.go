@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 )
 
 var DB *sql.DB
+var BootstrapPasswordPath = "./data/initial_admin_password.txt"
 
 // InitDB initializes SQLite database with WAL mode and runs table migrations
 func InitDB(dbPath string) (*sql.DB, error) {
@@ -27,28 +29,23 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	}
 
 	dir := filepath.Dir(dbPath)
+	BootstrapPasswordPath = filepath.Join(dir, "initial_admin_password.txt")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	// Driver applies connection-local settings on every newly opened connection.
+	separator := "?"
+	if strings.Contains(dbPath, "?") {
+		separator = "&"
+	}
+	params := url.Values{}
+	for _, pragma := range []string{"journal_mode(WAL)", "busy_timeout(10000)", "synchronous(NORMAL)", "foreign_keys(ON)", "temp_store(MEMORY)"} {
+		params.Add("_pragma", pragma)
+	}
+	db, err := sql.Open("sqlite", dbPath+separator+params.Encode())
 	if err != nil {
-		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
-	}
-
-	// Explicitly configure SQLite PRAGMAs for high-concurrency WAL mode
-	pragmas := []string{
-		"PRAGMA journal_mode = WAL;",
-		"PRAGMA busy_timeout = 10000;",
-		"PRAGMA synchronous = NORMAL;",
-		"PRAGMA cache_size = -20000;",
-		"PRAGMA foreign_keys = ON;",
-		"PRAGMA temp_store = MEMORY;",
-	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			log.Printf("[GNNwatchtower DB] Pragma warning (%s): %v", pragma, err)
-		}
+		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
 	if err := db.Ping(); err != nil {
@@ -94,7 +91,7 @@ func migrateSchema(db *sql.DB) error {
 		operator_notes TEXT,
 		is_agent_installed INTEGER DEFAULT 0,
 		agent_token TEXT UNIQUE,
-		agent_version TEXT DEFAULT '0.4.2',
+		agent_version TEXT DEFAULT 'unknown',
 		agent_upgrade_status TEXT DEFAULT 'none',
 		agent_upgrade_target TEXT DEFAULT '',
 		agent_upgrade_error TEXT DEFAULT '',
@@ -183,7 +180,7 @@ func migrateSchema(db *sql.DB) error {
 	('brevo_sender_name', 'GNNwatchtower Altyapı Bildirimi', 'Brevo gönderici adı'),
 	('brevo_recipient_email', '', 'Bildirimlerin gönderileceği e-posta adresi'),
 	('brevo_enabled', 'false', 'E-posta bildirimleri aktif mi'),
-	('agent_latest_version', '0.4.2', 'En son derlenmiş resmi GNNwatchtower ajan sürümü'),
+	('agent_latest_version', '0.4.12', 'En son derlenmiş resmi GNNwatchtower ajan sürümü'),
 	('agent_sha256_windows', '', 'Windows ajan ikili dosyasının resmi SHA256 özeti'),
 	('agent_sha256_linux', '', 'Linux ajan ikili dosyasının resmi SHA256 özeti');
 	`
@@ -197,7 +194,7 @@ func migrateSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE system_metrics ADD COLUMN net_tx_kbps REAL DEFAULT 0")
 
 	// Idempotent column migrations for devices
-	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_version TEXT DEFAULT '0.4.2'")
+	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_version TEXT DEFAULT 'unknown'")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_status TEXT DEFAULT 'none'")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_target TEXT DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE devices ADD COLUMN agent_upgrade_error TEXT DEFAULT ''")
@@ -217,47 +214,67 @@ func migrateSchema(db *sql.DB) error {
 	_ = db.QueryRow("SELECT value FROM system_settings WHERE key = 'agent_enrollment_key'").Scan(&enrollKey)
 	if enrollKey == "" {
 		kBytes := make([]byte, 24)
-		_, _ = rand.Read(kBytes)
+		if _, err := rand.Read(kBytes); err != nil {
+			return err
+		}
 		enrollKey = hex.EncodeToString(kBytes)
 		_, _ = db.Exec(`
 			INSERT INTO system_settings (key, value, description) 
 			VALUES ('agent_enrollment_key', $1, 'Ajan ilk kayıt doğrulama gizli anahtarı')
 			ON CONFLICT(key) DO UPDATE SET value = $1 WHERE value = ''
 		`, enrollKey)
-		log.Printf("[GNNwatchtower Security] Initialized Agent Enrollment Key: %s...", enrollKey[:8])
+		log.Print("[Security] Initialized enrollment key")
 	}
 
-	// Create initial admin user if no users exist (admin / admin, must change password = 1)
+	// Never restore a known bootstrap password. Rotate unfinished legacy admin/admin only.
 	var count int
-	_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
-	if count == 0 {
-		initPass := "admin"
-		if envPass := os.Getenv("INITIAL_ADMIN_PASSWORD"); envPass != "" {
-			initPass = envPass
+	if err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return err
+	}
+	var oldHash string
+	var mustChange int
+	legacy := false
+	if count != 0 {
+		if err := db.QueryRow("SELECT password_hash,must_change_password FROM users WHERE username='admin'").Scan(&oldHash, &mustChange); err == nil {
+			legacy = mustChange == 1 && VerifyPassword("admin", oldHash)
 		}
-		hash, err := HashPassword(initPass)
-		if err == nil {
-			_, _ = db.Exec("INSERT INTO users (username, password_hash, role, must_change_password) VALUES ('admin', $1, 'admin', 1)", hash)
-			log.Println("[GNNwatchtower Auth] Initial admin account provisioned (admin/admin). Mandatory password change is ENFORCED on first login.")
+	}
+	if count == 0 || legacy {
+		secret := make([]byte, 24)
+		if _, err := rand.Read(secret); err != nil {
+			return err
 		}
-	} else {
-		// If admin account exists and has not yet completed initial password change (must_change_password == 1),
-		// ensure initial credentials (admin / admin) allow login so the web modal can force password change.
-		var mustChange int
-		var adminHash string
-		if err := db.QueryRow("SELECT must_change_password, password_hash FROM users WHERE username = 'admin'").Scan(&mustChange, &adminHash); err == nil {
-			if mustChange == 1 {
-				targetPass := "admin"
-				if envPass := os.Getenv("INITIAL_ADMIN_PASSWORD"); envPass != "" {
-					targetPass = envPass
-				}
-				if !VerifyPassword(targetPass, adminHash) {
-					newHash, _ := HashPassword(targetPass)
-					_, _ = db.Exec("UPDATE users SET password_hash = $1 WHERE username = 'admin'", newHash)
-					log.Println("[GNNwatchtower Auth] Initial setup password restored for web panel onboarding (admin/admin).")
-				}
-			}
+		password := hex.EncodeToString(secret)
+		passwordPath := BootstrapPasswordPath
+		file, err := os.OpenFile(passwordPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		if err != nil {
+			return fmt.Errorf("bootstrap credential: %w", err)
 		}
+		if err = file.Chmod(0600); err != nil {
+			file.Close()
+			return err
+		}
+		_, err = file.WriteString(password + "\n")
+		closeErr := file.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		hash, err := HashPassword(password)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			_, err = db.Exec("INSERT INTO users(username,password_hash,role,must_change_password) VALUES('admin',?,'admin',1)", hash)
+		} else {
+			_, err = db.Exec("UPDATE users SET password_hash=? WHERE username='admin'", hash)
+		}
+		if err != nil {
+			return err
+		}
+		log.Printf("[Auth] One-time bootstrap credential saved locally: %s", passwordPath)
 	}
 
 	return nil

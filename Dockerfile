@@ -29,7 +29,10 @@ WORKDIR /opt/gnnwatchtower
 
 COPY --from=backend-builder /app/gnnwatchtower /opt/gnnwatchtower/gnnwatchtower
 
-RUN mkdir -p /opt/gnnwatchtower/data /opt/gnnwatchtower/backups /opt/gnnwatchtower/logs
+RUN addgroup -g 10001 watchtower && adduser -D -u 10001 -G watchtower watchtower \
+ && mkdir -p /opt/gnnwatchtower/data /opt/gnnwatchtower/backups /opt/gnnwatchtower/logs \
+ && chown -R 10001:10001 /opt/gnnwatchtower
+USER 10001:10001
 
 EXPOSE 3800
 
