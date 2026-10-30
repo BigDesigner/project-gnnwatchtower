@@ -15,6 +15,7 @@ command -v git >/dev/null 2>&1 || MISSING+=(git)
 command -v curl >/dev/null 2>&1 || MISSING+=(curl)
 command -v go >/dev/null 2>&1 || MISSING+=(golang-go)
 command -v x86_64-w64-mingw32-windres >/dev/null 2>&1 || MISSING+=(binutils-mingw-w64-x86-64)
+command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 || MISSING+=(gcc-mingw-w64-x86-64)
 if [ ${#MISSING[@]} -gt 0 ]; then apt-get update -qq; apt-get install -y -qq "${MISSING[@]}"; fi
 SOURCE_DIR="$BUILD_DIR/source"
 echo '[1/4] Kaynak ve derleyici hazirlaniyor.'
