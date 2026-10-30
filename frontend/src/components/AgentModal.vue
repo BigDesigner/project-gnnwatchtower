@@ -67,7 +67,7 @@
           <div class="flex items-center justify-between text-txt-secondary font-medium">
             <span class="text-txt-muted text-[11px]">Yönetici PowerShell penceresinde çalıştırın:</span>
             <button 
-              @click="copyText(winCmd, 'win')"
+              @click="copyText(windowsCmd, 'win')"
               class="text-blue-400 hover:text-blue-300 flex items-center gap-1"
             >
               <span class="material-symbols-outlined text-[14px]">content_copy</span>
@@ -75,7 +75,7 @@
             </button>
           </div>
           <div class="p-2.5 rounded bg-[#0c0e12] border border-[#232936] font-mono text-[11px] text-txt-primary select-all break-all">
-            {{ winCmd }}
+            {{ windowsCmd || installError || 'Kurulum hazırlanıyor…' }}
           </div>
           <p class="text-[10px] text-txt-muted">
             * Dosya tabanlı indirme yürütür, hafıza içi (`iex`) çalıştırmaz ve doğrudan yerel Windows Hizmeti (SCM) olarak kaydeder.
@@ -95,7 +95,7 @@
             </button>
           </div>
           <div class="p-2.5 rounded bg-[#0c0e12] border border-[#232936] font-mono text-[11px] text-txt-primary select-all break-all">
-            {{ linuxCmd }}
+            {{ linuxCmd || installError || 'Kurulum hazırlanıyor…' }}
           </div>
           <p class="text-[10px] text-txt-muted">
             * `/opt/gnnwatchtower-agent` altına yerleştirilir ve `/etc/systemd/system/gnnwatchtower-agent.service` olarak arka planda başlatılır.
@@ -121,15 +121,7 @@
             </a>
           </div>
 
-          <div class="flex flex-col gap-1.5">
-            <span class="text-txt-muted text-[11px] font-medium">Hizmet Kurulum Komutu (GPO / Komut Satırı):</span>
-            <div class="p-2.5 rounded bg-[#0c0e12] border border-[#232936] font-mono text-[11px] text-txt-primary select-all">
-              gnnwatchtower-agent.exe -service install -server {{ hostUrl }}{{ enrollmentKey ? ` -enroll-key "${enrollmentKey}"` : '' }}
-            </div>
-            <div class="p-2.5 rounded bg-[#0c0e12] border border-[#232936] font-mono text-[11px] text-txt-primary select-all">
-              gnnwatchtower-agent.exe -service start
-            </div>
-          </div>
+          <div class="text-txt-muted text-[11px]">GPO / SCCM dağıtımında Windows sekmesindeki sertifika içeren kurulum komutunu kullanın. Tek başına ikili dosya güven yapılandırmasını içermez.</div>
         </div>
       </div>
 
@@ -157,15 +149,23 @@ defineEmits(['close'])
 const copied = ref('')
 const activeMethod = ref('powershell')
 const enrollmentKey = ref('')
+const linuxScript = ref('')
+const windowsScript = ref('')
+const installError = ref('')
 
 let requestEpoch = 0
 watch(() => props.isOpen, async open => {
  const epoch = ++requestEpoch
- enrollmentKey.value = ''; copied.value = ''; activeMethod.value = 'powershell'
+ enrollmentKey.value = ''; linuxScript.value = ''; windowsScript.value = ''; installError.value = ''; copied.value = ''; activeMethod.value = 'powershell'
  if (!open) return
- try { const settings = await api.getSettings(); if (epoch === requestEpoch && props.isOpen) enrollmentKey.value = settings.agent_enrollment_key || '' } catch { enrollmentKey.value = '' }
+ try {
+  const [settings, linux, windows] = await Promise.all([api.getSettings(), api.getLinuxAgentScript(), api.getWindowsAgentScript()])
+  if (epoch !== requestEpoch || !props.isOpen) return
+  enrollmentKey.value = settings.agent_enrollment_key || ''; linuxScript.value=linux; windowsScript.value=windows
+ } catch(err) { if(epoch===requestEpoch && props.isOpen) installError.value=err.response?.data?.error || 'Kurulum betiği hazırlanamadı.' }
+
 }, { immediate: true })
-onUnmounted(() => { requestEpoch++; enrollmentKey.value = ''; copied.value = '' })
+onUnmounted(() => { requestEpoch++; enrollmentKey.value = ''; linuxScript.value=''; windowsScript.value=''; copied.value = '' })
 
 const safeEnrollKey = computed(() => {
   const k = (enrollmentKey.value || '').trim()
@@ -177,62 +177,24 @@ const safeEnrollKey = computed(() => {
 
 const safeHostUrl = computed(() => {
   const raw = window.location.origin || 'http://127.0.0.1:3800'
-  return raw.replace(/[^a-zA-Z0-9.:\-_/]/g, '')
+  return raw.replace(/[^a-zA-Z0-9.:\-_/\[\]]/g, '')
 })
 
 const hostUrl = safeHostUrl
 
-const linuxCmd = computed(() => {
-  const key = safeEnrollKey.value
-  const enrollFlag = key ? ` -enroll-key '${key}'` : ''
-  return `sudo systemctl stop gnnwatchtower-agent 2>/dev/null || true; sudo mkdir -p /opt/gnnwatchtower-agent && cd /opt/gnnwatchtower-agent && sudo rm -f gnnwatchtower-agent.tmp && sudo curl -fsSL '${safeHostUrl.value}/api/agent/download/linux' -o gnnwatchtower-agent.tmp && sudo chmod 755 gnnwatchtower-agent.tmp && sudo mv -f gnnwatchtower-agent.tmp gnnwatchtower-agent && sudo ./gnnwatchtower-agent -service install -server '${safeHostUrl.value}'${enrollFlag} && sudo ./gnnwatchtower-agent -service start`
-})
+function encoded(text) { return btoa(Array.from(new TextEncoder().encode(text), byte=>String.fromCharCode(byte)).join('')) }
+const linuxCmd = computed(() => linuxScript.value ? "printf '%s' '"+encoded(linuxScript.value)+"' | base64 -d | sudo bash" : '')
+const windowsCmd = computed(() => windowsScript.value ? "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"+encoded(windowsScript.value)+"')) | Invoke-Expression" : '')
 
-const winCmd = computed(() => {
-  const key = safeEnrollKey.value
-  const enrollFlag = key ? ` -enroll-key '${key}'` : ''
-  return `Stop-Service gnnwatchtower-agent -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path 'C:\\Program Files\\GNNwatchtower-Agent'; Invoke-WebRequest -Uri '${safeHostUrl.value}/api/agent/download/windows' -OutFile 'C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe'; & 'C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe' -service install -server '${safeHostUrl.value}'${enrollFlag}; & 'C:\\Program Files\\GNNwatchtower-Agent\\gnnwatchtower-agent.exe' -service start`
-})
-
-const copyText = async (text, type) => {
+async function copyText(text, type) {
+  if (!text) return
   let success = false
-
-  if (navigator.clipboard && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(text)
-      success = true
-    } catch (e) {
-      success = false
-    }
+  try { await navigator.clipboard.writeText(text); success = true } catch {
+    const area = document.createElement('textarea')
+    area.value = text; area.style.position = 'fixed'; area.style.opacity = '0'
+    document.body.appendChild(area); area.select()
+    try { success = document.execCommand('copy') } finally { area.remove() }
   }
-
-  if (!success) {
-    try {
-      const textArea = document.createElement('textarea')
-      textArea.value = text
-      textArea.setAttribute('readonly', '')
-      textArea.style.position = 'fixed'
-      textArea.style.top = '0'
-      textArea.style.left = '0'
-      textArea.style.opacity = '0'
-      textArea.style.pointerEvents = 'none'
-      document.body.appendChild(textArea)
-      textArea.focus()
-      textArea.select()
-      success = document.execCommand('copy')
-      document.body.removeChild(textArea)
-    } catch (err) {
-      console.error('Kopyalama basarisiz:', err)
-    }
-  }
-
-  if (success) {
-    copied.value = type
-    setTimeout(() => {
-      copied.value = ''
-    }, 2000)
-  } else {
-    window.prompt('Komutu panoya kopyalamak için Ctrl+C tuşlarına basınız:', text)
-  }
+  if (success) { copied.value = type; setTimeout(() => { if (copied.value === type) copied.value = '' }, 2000) }
 }
 </script>

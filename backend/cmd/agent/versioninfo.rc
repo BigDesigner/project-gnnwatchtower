@@ -1,8 +1,8 @@
 1 24 "agent.manifest"
 
 1 VERSIONINFO
-FILEVERSION 0,4,12,0
-PRODUCTVERSION 0,4,12,0
+FILEVERSION 0,4,13,0
+PRODUCTVERSION 0,4,13,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -15,12 +15,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "GNNwatchtower"
             VALUE "FileDescription", "GNNwatchtower Enterprise Telemetry Agent"
-            VALUE "FileVersion", "0.4.12.0"
+            VALUE "FileVersion", "0.4.13.0"
             VALUE "InternalName", "gnnwatchtower-agent"
             VALUE "LegalCopyright", "Copyright (C) 2026 GNNwatchtower. All rights reserved."
             VALUE "OriginalFilename", "gnnwatchtower-agent.exe"
             VALUE "ProductName", "GNNwatchtower"
-            VALUE "ProductVersion", "0.4.12.0"
+            VALUE "ProductVersion", "0.4.13.0"
         END
     END
     BLOCK "VarFileInfo"

@@ -32,12 +32,18 @@ func InitUpdateSigner(dataDir string) error {
 	keyPath := filepath.Join(dataDir, "agent_signer.key")
 
 	// 1. Try to read existing private key
-	if keyData, err := os.ReadFile(keyPath); err == nil && len(keyData) == ed25519.PrivateKeySize {
+	keyData, readErr := os.ReadFile(keyPath)
+	if readErr == nil {
+		if len(keyData) != ed25519.PrivateKeySize {
+			return fmt.Errorf("existing signing key is invalid; refusing identity replacement")
+		}
 		updatePrivateKey = ed25519.PrivateKey(keyData)
 		updatePublicKey = updatePrivateKey.Public().(ed25519.PublicKey)
-		log.Printf("[GNNwatchtower Security] Loaded existing Ed25519 Update Signing Key (Public: %s...)", hex.EncodeToString(updatePublicKey)[:12])
 		syncPublicKeyToDB(hex.EncodeToString(updatePublicKey))
 		return nil
+	}
+	if !os.IsNotExist(readErr) {
+		return fmt.Errorf("read existing signing key: %w", readErr)
 	}
 
 	// 2. Generate a new Ed25519 key pair
@@ -51,7 +57,7 @@ func InitUpdateSigner(dataDir string) error {
 
 	// Write private key with strict 0600 permissions
 	if err := os.WriteFile(keyPath, []byte(priv), 0600); err != nil {
-		log.Printf("[GNNwatchtower Security] UYARI: Ed25519 anahtar dosyaya yazılamadı: %v", err)
+		return fmt.Errorf("persist update signer: %w", err)
 	}
 
 	pubHex := hex.EncodeToString(pub)

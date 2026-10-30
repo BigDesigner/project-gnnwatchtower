@@ -180,7 +180,7 @@ func migrateSchema(db *sql.DB) error {
 	('brevo_sender_name', 'GNNwatchtower Altyapı Bildirimi', 'Brevo gönderici adı'),
 	('brevo_recipient_email', '', 'Bildirimlerin gönderileceği e-posta adresi'),
 	('brevo_enabled', 'false', 'E-posta bildirimleri aktif mi'),
-	('agent_latest_version', '0.4.12', 'En son derlenmiş resmi GNNwatchtower ajan sürümü'),
+	('agent_latest_version', '0.4.13', 'En son derlenmiş resmi GNNwatchtower ajan sürümü'),
 	('agent_sha256_windows', '', 'Windows ajan ikili dosyasının resmi SHA256 özeti'),
 	('agent_sha256_linux', '', 'Linux ajan ikili dosyasının resmi SHA256 özeti');
 	`

@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue'
 import path from 'path'
 import fs from 'fs'
 
-let appVersion = '0.4.12'
+let appVersion = '0.4.13'
 for (const p of [path.resolve(__dirname, '../VERSION'), path.resolve(__dirname, '../VERSIYON')]) {
   try {
     if (fs.existsSync(p)) {

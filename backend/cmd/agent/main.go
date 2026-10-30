@@ -357,10 +357,6 @@ func main() {
 	}
 
 	_ = requireHTTPSFlag
-	if (*serviceCmd == "" || *serviceCmd == "install") && !strings.HasPrefix(strings.ToLower(resolvedServerURL), "https://") {
-		log.Fatalf("[FATAL] Guvenlik ilkesi ihlali: -require-https aktif ancak sunucu adresi sifrelenmemis HTTP (%s) olarak belirtildi!", resolvedServerURL)
-	}
-
 	// 2. Check if invoked as service management command
 	if *serviceCmd != "" {
 		if handleServiceCommand(*serviceCmd, resolvedServerURL, *token, *enrollKeyFlag) {

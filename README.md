@@ -1,6 +1,6 @@
 # GNNwatchtower
 
-[![Sürüm](https://img.shields.io/badge/version-0.4.12-blue)](VERSION)
+[![Sürüm](https://img.shields.io/badge/version-0.4.13-blue)](VERSION)
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8)](backend/go.mod)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D)](frontend/package.json)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57)](backend/internal/database/db.go)
@@ -112,6 +112,6 @@ Ağ keşfi kaldırılmıştır. NAS/ESXi izleme için ek yönetim servisi açıl
 
 [Kaynaktan derleme, elle ajan kurulumu, yapılandırma ve sorun giderme](docs/operations.md) · [Güvenlik ilkesi](.memory-bank/adr/0006-no-additional-attack-surface.md) · [AGPL-3.0 lisansı](LICENSE)
 
-### 0.4.12 güvenlik geçişi
+### Kurulum ve güncelleme
 
-HTTP bağlantıları artık kabul edilmez. Güncellemeden önce [HTTPS geçiş adımlarını](docs/security-upgrade-0.4.12.md) tamamlayın. İlk kurulum parolası: `sudo cat /opt/gnnwatchtower/data/initial_admin_password.txt`.
+Yukarıdaki tek komutlar adres ve uygulamaya özel sertifikayı otomatik hazırlar. Paneli HTTPS adresinden açın. İlk bağlantıda tarayıcı özel sertifika uyarısı gösterebilir; sunucu konsolundaki SHA-256 parmak iziyle doğrulayın. Ajan Özeti içindeki komutlar gerekli sertifikayı taşır; ajanlarda elle sertifika veya `.env` ayarı gerekmez. Güncelleme sırasında çevrimdışı kalan eski ajanlarda paneldeki kurulum komutunu yeniden çalıştırın. [Ayrıntılar](docs/security-upgrade-0.4.13.md).

@@ -1,4 +1,4 @@
-> 0.4.12: HTTP ve eski root/NET_ADMIN dağıtım açıklamaları artık geçerli değildir. Güncel kurulum ve HTTPS geçişi için [güvenlik geçiş belgesini](security-upgrade-0.4.12.md) kullanın.
+> 0.4.13: Eski HTTP/root/NET_ADMIN dağıtım açıklamaları geçerli değildir. Güncel tek komut akışı için [kurulum belgesini](security-upgrade-0.4.13.md) kullanın.
 
 # Ayrıntılı kullanım ve işletim notları
 

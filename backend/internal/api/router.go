@@ -26,6 +26,22 @@ func SetupRouter(webFS fs.FS) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(func(c *gin.Context) {
+		if c.Request.TLS != nil {
+			c.Next()
+			return
+		}
+		if c.Request.Method == "GET" && c.Request.URL.Path == "/api/agent/signer-key" {
+			c.Next()
+			return
+		}
+		if c.Request.Method == "GET" && !strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.Redirect(308, "https://"+c.Request.Host+c.Request.URL.RequestURI())
+			c.Abort()
+			return
+		}
+		c.AbortWithStatusJSON(426, gin.H{"error": "HTTPS gerekli; adresin https:// karşılığını kullanın"})
+	})
 	// Fix R04: Do not trust arbitrary X-Forwarded-For headers from untrusted direct connections
 	_ = r.SetTrustedProxies(nil)
 

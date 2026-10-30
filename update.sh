@@ -1,137 +1,173 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# GNNwatchtower - Safe In-Place Updater (Ubuntu 22.04 / 24.04 LTS)
-# Port: 3800 | Preserves Data & Settings • Creates Pre-Update Backup
-# License: GNU Affero General Public License v3 (AGPL-3.0)
-# ==============================================================================
-
+# Build while the existing service runs. Cut over only after every binary is ready.
 set -euo pipefail
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-echo -e "${CYAN}=================================================================${NC}"
-echo -e "${CYAN}    GNNwatchtower Guvenli Guncelleme (Update) Baslatiliyor       ${NC}"
-echo -e "${CYAN}=================================================================${NC}"
-
-# 1. Root Yetkisi Kontrolü
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}[HATA] Bu guncelleme betigi root yetkisiyle calistirilmalidir (sudo bash update.sh)${NC}"
-    exit 1
-fi
-
-INSTALL_DIR="/opt/gnnwatchtower"
-BIN_TARGET="$INSTALL_DIR/gnnwatchtower"
-REPO_URL="https://github.com/BigDesigner/project-gnnwatchtower.git"
-BRANCH="main"
-
-if [ ! -d "$INSTALL_DIR" ]; then
-    echo -e "${RED}[HATA] $INSTALL_DIR kurulu degil. Lutfen once 'install.sh' ile kurulum yapiniz.${NC}"
-    exit 1
-fi
-
-# Refuse an unprepared HTTP-to-HTTPS migration before stopping the service.
-if ! grep -q '^BIND_ADDRESS=.' "$INSTALL_DIR/.env"; then
-    echo "[HATA] Once mevcut yonetim adresini BIND_ADDRESS olarak acikca tanimlayin."
-    exit 1
-fi
-if ! grep -Eq '^TLS_ENABLED=(true|1)$' "$INSTALL_DIR/.env"; then
-    echo "[HATA] Once docs/security-upgrade-0.4.12.md HTTPS gecisini tamamlayin."
-    exit 1
-fi
-# Backup after a clean service stop, including WAL sidecars if present.
-systemctl stop gnnwatchtower
-
+if [ "$EUID" -ne 0 ]; then echo '[HATA] sudo bash ile calistirin.'; exit 1; fi
+INSTALL_DIR=/opt/gnnwatchtower
+if [ ! -f "$INSTALL_DIR/gnnwatchtower" ]; then echo '[HATA] Once install.sh ile kurulum yapin.'; exit 1; fi
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="$INSTALL_DIR/backups"
-mkdir -p "$BACKUP_DIR"
-
-if [ -f "$INSTALL_DIR/data/gnnwatchtower.db" ]; then
-    echo -e "${BLUE}[1/4] Mevcut veritabani guvenle yedekleniyor: pre-update-${TIMESTAMP}.db...${NC}"
-    cp "$INSTALL_DIR/data/gnnwatchtower.db" "$BACKUP_DIR/pre-update-${TIMESTAMP}.db"
-    for suffix in -wal -shm; do
-        if [ -f "$INSTALL_DIR/data/gnnwatchtower.db$suffix" ]; then cp "$INSTALL_DIR/data/gnnwatchtower.db$suffix" "$BACKUP_DIR/pre-update-${TIMESTAMP}.db$suffix"; fi
-    done
-fi
-
-if [ -f "$INSTALL_DIR/.env" ]; then
-    cp "$INSTALL_DIR/.env" "$BACKUP_DIR/pre-update-${TIMESTAMP}.env"
-fi
-
-# 3. Servisi Gecici Olarak Durdur (Text file busy onlemi ve temiz SQLite WAL checkpoint)
-echo -e "${BLUE}[2/4] GNNwatchtower servisi gecici olarak durduruluyor...${NC}"
-systemctl stop gnnwatchtower 2>/dev/null || true
-
-# 4. En Guncel Surumu Cek ve Derle
-echo -e "${BLUE}[3/4] En guncel kodlar GitHub'dan indiriliyor ve derleniyor...${NC}"
-
-MISSING_PKGS=()
-if ! command -v git >/dev/null 2>&1; then MISSING_PKGS+=("git"); fi
-if ! command -v go >/dev/null 2>&1; then MISSING_PKGS+=("golang-go"); fi
-if ! command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then MISSING_PKGS+=("binutils-mingw-w64-x86-64"); fi
-if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq || true
-    apt-get install -y -qq "${MISSING_PKGS[@]}"
-fi
-
-BUILD_DIR=$(mktemp -d -t gnnwatchtower-update-XXXXXX)
-git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$BUILD_DIR"
-
-APP_VERSION=$(cat "$BUILD_DIR/VERSION" 2>/dev/null || cat VERSION 2>/dev/null || echo "0.4.12")
-cp "$BUILD_DIR/VERSION" "$INSTALL_DIR/VERSION" 2>/dev/null || true
-
-TEMP_BIN="$BUILD_DIR/gnnwatchtower"
-(cd "$BUILD_DIR/backend" && go mod tidy && CGO_ENABLED=0 go build -ldflags="-s -w -X 'gnnwatchtower/internal/version.Version=${APP_VERSION}'" -o "$TEMP_BIN" ./cmd/server)
-
-# Ajan ikili dosyalarini da guncelle (v${APP_VERSION})
-mkdir -p "$INSTALL_DIR/bin"
+BUILD_DIR=$(mktemp -d -t watchtower-update-XXXXXX)
+BACKUP_DIR="$INSTALL_DIR/backups/pre-update-$TIMESTAMP"
+STOPPED=0
+SWAPPED=0
+cleanup() {
+    result=$?
+    if [ "$result" -ne 0 ] && [ "$STOPPED" = 1 ]; then
+        cp "$BACKUP_DIR/environment" "$INSTALL_DIR/.env"
+        if [ "$SWAPPED" = 1 ]; then
+            cp "$BACKUP_DIR/gnnwatchtower" "$INSTALL_DIR/gnnwatchtower.rollback"
+            chmod 755 "$INSTALL_DIR/gnnwatchtower.rollback"
+            mv -f "$INSTALL_DIR/gnnwatchtower.rollback" "$INSTALL_DIR/gnnwatchtower"
+            cp "$BACKUP_DIR/environment" "$INSTALL_DIR/.env"
+            cp "$BACKUP_DIR/VERSION" "$INSTALL_DIR/VERSION" 2>/dev/null || true
+            if [ -f "$BACKUP_DIR/security.conf" ]; then
+                cp "$BACKUP_DIR/security.conf" /etc/systemd/system/gnnwatchtower.service.d/security.conf
+            else
+                rm -f /etc/systemd/system/gnnwatchtower.service.d/security.conf
+            fi
+        fi
+        systemctl daemon-reload
+        systemctl start gnnwatchtower || true
+        echo '[HATA] Guncelleme tamamlanamadi; onceki sunucu yeniden baslatildi. Gunluk: journalctl -u gnnwatchtower -n 30'
+    fi
+    rm -rf "$BUILD_DIR"
+    exit "$result"
+}
+trap cleanup EXIT
+MISSING=()
+command -v git >/dev/null 2>&1 || MISSING+=(git)
+command -v go >/dev/null 2>&1 || MISSING+=(golang-go)
+command -v curl >/dev/null 2>&1 || MISSING+=(curl)
+command -v x86_64-w64-mingw32-windres >/dev/null 2>&1 || MISSING+=(binutils-mingw-w64-x86-64)
+if [ ${#MISSING[@]} -gt 0 ]; then apt-get update -qq; apt-get install -y -qq "${MISSING[@]}"; fi
+SOURCE_DIR="$BUILD_DIR/source"
+echo '[1/5] Kaynak ve ikili dosyalar hazirlaniyor; mevcut servis calismaya devam ediyor.'
+git clone --depth 1 -b main https://github.com/BigDesigner/project-gnnwatchtower.git "$SOURCE_DIR"
+source "$SOURCE_DIR/scripts/ensure-go.sh" "$BUILD_DIR/toolchain"
+APP_VERSION=$(tr -d '\r\n' < "$SOURCE_DIR/VERSION")
+mkdir -p "$BUILD_DIR/bin"
 if command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then
-    (cd "$BUILD_DIR/backend/cmd/agent" && x86_64-w64-mingw32-windres versioninfo.rc -O coff -o rsrc_windows_amd64.syso 2>/dev/null || true)
+    (cd "$SOURCE_DIR/backend/cmd/agent" && x86_64-w64-mingw32-windres versioninfo.rc -O coff -o rsrc_windows_amd64.syso)
 fi
-(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X 'gnnwatchtower/internal/version.Version=${APP_VERSION}' -X 'main.Version=${APP_VERSION}'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent" ./cmd/agent)
-(cd "$BUILD_DIR/backend" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X 'gnnwatchtower/internal/version.Version=${APP_VERSION}' -X 'main.Version=${APP_VERSION}'" -o "$INSTALL_DIR/bin/gnnwatchtower-agent.exe" ./cmd/agent)
-chmod +x "$INSTALL_DIR/bin/gnnwatchtower-agent"
-
-# Binary'yi guvenle yerlestir
-install -m 755 "$TEMP_BIN" "$BIN_TARGET"
-bash "$BUILD_DIR/scripts/harden-collector.sh"
-rm -rf "$BUILD_DIR"
-
-# .env icinde DB_PATH tanimini garantiye al
-if [ -f "$INSTALL_DIR/.env" ] && ! grep -q "DB_PATH=" "$INSTALL_DIR/.env"; then
-    echo "DB_PATH=$INSTALL_DIR/data/gnnwatchtower.db" >> "$INSTALL_DIR/.env"
+(cd "$SOURCE_DIR/backend" && CGO_ENABLED=0 go build -ldflags="-s -w -X gnnwatchtower/internal/version.Version=$APP_VERSION" -o "$BUILD_DIR/bin/gnnwatchtower" ./cmd/server)
+(cd "$SOURCE_DIR/backend" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X gnnwatchtower/internal/version.Version=$APP_VERSION -X main.Version=$APP_VERSION" -o "$BUILD_DIR/bin/gnnwatchtower-agent" ./cmd/agent)
+(cd "$SOURCE_DIR/backend" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X gnnwatchtower/internal/version.Version=$APP_VERSION -X main.Version=$APP_VERSION" -o "$BUILD_DIR/bin/gnnwatchtower-agent.exe" ./cmd/agent)
+mkdir -p "$INSTALL_DIR/bin"
+# Publish atomically so the old server can offer its existing signed upgrade mechanism.
+for binary in gnnwatchtower-agent gnnwatchtower-agent.exe; do
+    install -m 755 "$BUILD_DIR/bin/$binary" "$INSTALL_DIR/bin/$binary.new"
+    mv -f "$INSTALL_DIR/bin/$binary.new" "$INSTALL_DIR/bin/$binary"
+done
+echo '[2/5] Mevcut ajanlarin imzali gecis guncellemesi hazirlaniyor.'
+AGENT_COUNT=0
+# Only an already TLS-enabled fleet can receive an automatic remote trust transition.
+# Unknown legacy HTTP trust must be repaired through the authenticated installer.
+if grep -Eq '^TLS_ENABLED=(true|1)
+if [ "$AGENT_COUNT" -gt 0 ]; then
+    echo "$AGENT_COUNT aktif ajana guncelleme sunuldu; 45 saniyelik gecis araligi bekleniyor."
+    sleep 45
 fi
-
-# Eger yerel sunucu uzerinde ajan kuruluysa, ikili dosyayi ve signer.pub anahtarini otomatik guncelle
-if [ -d "/opt/gnnwatchtower-agent" ]; then
+# Snapshot only after clean stop; never copy a live SQLite main file in isolation.
+echo '[3/5] Servis durduruluyor ve tutarli yedek aliniyor.'
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+cp "$INSTALL_DIR/.env" "$BACKUP_DIR/environment"
+cp "$INSTALL_DIR/gnnwatchtower" "$BACKUP_DIR/gnnwatchtower"
+cp "$INSTALL_DIR/VERSION" "$BACKUP_DIR/VERSION" 2>/dev/null || true
+if [ -f /etc/systemd/system/gnnwatchtower.service.d/security.conf ]; then cp /etc/systemd/system/gnnwatchtower.service.d/security.conf "$BACKUP_DIR/security.conf"; fi
+bash "$SOURCE_DIR/scripts/configure-tls.sh"
+systemctl stop gnnwatchtower
+STOPPED=1
+cp -a "$INSTALL_DIR/data" "$BACKUP_DIR/data"
+echo '[4/5] Sunucu ve yetkiler guncelleniyor.'
+install -m 755 "$BUILD_DIR/bin/gnnwatchtower" "$INSTALL_DIR/gnnwatchtower.new"
+mv -f "$INSTALL_DIR/gnnwatchtower.new" "$INSTALL_DIR/gnnwatchtower"
+SWAPPED=1
+cp "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
+bash "$SOURCE_DIR/scripts/harden-collector.sh"
+if [ -d /opt/gnnwatchtower-agent ]; then
     systemctl stop gnnwatchtower-agent 2>/dev/null || true
-    install -m 755 "$INSTALL_DIR/bin/gnnwatchtower-agent" "/opt/gnnwatchtower-agent/gnnwatchtower-agent"
-    systemctl start gnnwatchtower-agent 2>/dev/null || true
+    install -m 755 "$BUILD_DIR/bin/gnnwatchtower-agent" /opt/gnnwatchtower-agent/gnnwatchtower-agent
 fi
-
-# 5. Servisi Yeniden Baslat ve Kontrol Et
-echo -e "${BLUE}[4/4] GNNwatchtower servisi yeniden baslatiliyor...${NC}"
 systemctl daemon-reload
 systemctl restart gnnwatchtower
-
-sleep 2
-if systemctl is-active --quiet gnnwatchtower; then
-    SERVER_IP=$(hostname -I | awk '{print $1}' || echo "SUNUCU_IP")
-    echo ""
-    echo -e "${GREEN}=================================================================${NC}"
-    echo -e "${GREEN}  ✓ GNNwatchtower Basariyla Guncellendi! (v${APP_VERSION})      ${NC}"
-    echo -e "${GREEN}  ✓ Tum ayarlar, cihazlar ve veritabani korundu.                ${NC}"
-    echo -e "${GREEN}=================================================================${NC}"
-    echo -e "Yonetim Paneli: ${CYAN}https://${SERVER_IP}:3800${NC}"
-    echo -e "Yedek Konumu  : ${BLUE}$BACKUP_DIR/pre-update-${TIMESTAMP}.db${NC}"
-    echo -e "Servis Durumu : ${GREEN}Aktif (Running)${NC}"
-    echo -e "${GREEN}=================================================================${NC}"
-else
-    echo -e "${RED}[UYARI] Servis baslatilamadi. Loglar: journalctl -u gnnwatchtower -n 20${NC}"
-    exit 1
+# Check actual HTTPS readiness using this appliance's certificate; never disable verification.
+echo '[5/5] HTTPS hazirligi kontrol ediliyor.'
+BIND_ADDRESS=$(sed -n 's/^BIND_ADDRESS=//p' "$INSTALL_DIR/.env" | tail -1)
+PORT=$(sed -n 's/^SERVER_PORT=//p' "$INSTALL_DIR/.env" | tail -1); PORT=${PORT:-3800}
+CERT=$(sed -n 's/^TLS_CERT_FILE=//p' "$INSTALL_DIR/.env" | tail -1); CERT=${CERT:-$INSTALL_DIR/data/cert.pem}
+HEALTH_ADDRESS=$BIND_ADDRESS
+case "$HEALTH_ADDRESS" in 0.0.0.0|::) HEALTH_ADDRESS=127.0.0.1;; esac
+case "$HEALTH_ADDRESS" in *:*) HEALTH_ADDRESS="[$HEALTH_ADDRESS]";; esac
+READY=0
+for attempt in $(seq 1 15); do
+    if curl --noproxy '*' --cacert "$CERT" --connect-timeout 2 --max-time 3 -fsS "https://$HEALTH_ADDRESS:$PORT/api/health" >/dev/null 2>&1; then READY=1; break; fi
+    sleep 1
+done
+if [ "$READY" != 1 ]; then echo '[HATA] HTTPS hazir olmadi.'; exit 1; fi
+STOPPED=0
+if [ -d /opt/gnnwatchtower-agent ]; then
+    install -m 600 "$CERT" /opt/gnnwatchtower-agent/server-cert.pem
+    systemctl start gnnwatchtower-agent 2>/dev/null || true
 fi
+PANEL_ADDRESS=$BIND_ADDRESS
+case "$PANEL_ADDRESS" in 0.0.0.0|::) PANEL_ADDRESS=$(hostname -I | awk '{print $1}');; esac
+printf '\nGuncellendi: %s\nPanel: https://%s:%s\nYedek: %s\n' "$APP_VERSION" "$PANEL_ADDRESS" "$PORT" "$BACKUP_DIR"
+echo 'Ajan komutlari: Ajan Ozeti > Ajan Dagitimi. Cevrimdisi veya imza anahtari eksik eski ajanlarda paneldeki kurulum komutunu yeniden calistirin.'
+if command -v openssl >/dev/null 2>&1; then openssl x509 -in "$CERT" -noout -fingerprint -sha256; fi
+ "$INSTALL_DIR/.env"; then
+    AGENT_COUNT=$("$BUILD_DIR/bin/gnnwatchtower" -prepare-agent-migration -migration-db "$INSTALL_DIR/data/gnnwatchtower.db")
+else
+    echo 'Eski HTTP ajanlari: sunucu guncellemesinden sonra paneldeki sertifika iceren kurulum komutunu yeniden calistirin.'
+fi
+if [ "$AGENT_COUNT" -gt 0 ]; then
+    echo "$AGENT_COUNT aktif ajana guncelleme sunuldu; 45 saniyelik gecis araligi bekleniyor."
+    sleep 45
+fi
+# Snapshot only after clean stop; never copy a live SQLite main file in isolation.
+echo '[3/5] Servis durduruluyor ve tutarli yedek aliniyor.'
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+cp "$INSTALL_DIR/.env" "$BACKUP_DIR/environment"
+cp "$INSTALL_DIR/gnnwatchtower" "$BACKUP_DIR/gnnwatchtower"
+cp "$INSTALL_DIR/VERSION" "$BACKUP_DIR/VERSION" 2>/dev/null || true
+if [ -f /etc/systemd/system/gnnwatchtower.service.d/security.conf ]; then cp /etc/systemd/system/gnnwatchtower.service.d/security.conf "$BACKUP_DIR/security.conf"; fi
+bash "$SOURCE_DIR/scripts/configure-tls.sh"
+systemctl stop gnnwatchtower
+STOPPED=1
+cp -a "$INSTALL_DIR/data" "$BACKUP_DIR/data"
+echo '[4/5] Sunucu ve yetkiler guncelleniyor.'
+install -m 755 "$BUILD_DIR/bin/gnnwatchtower" "$INSTALL_DIR/gnnwatchtower.new"
+mv -f "$INSTALL_DIR/gnnwatchtower.new" "$INSTALL_DIR/gnnwatchtower"
+SWAPPED=1
+cp "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
+bash "$SOURCE_DIR/scripts/harden-collector.sh"
+if [ -d /opt/gnnwatchtower-agent ]; then
+    systemctl stop gnnwatchtower-agent 2>/dev/null || true
+    install -m 755 "$BUILD_DIR/bin/gnnwatchtower-agent" /opt/gnnwatchtower-agent/gnnwatchtower-agent
+fi
+systemctl daemon-reload
+systemctl restart gnnwatchtower
+# Check actual HTTPS readiness using this appliance's certificate; never disable verification.
+echo '[5/5] HTTPS hazirligi kontrol ediliyor.'
+BIND_ADDRESS=$(sed -n 's/^BIND_ADDRESS=//p' "$INSTALL_DIR/.env" | tail -1)
+PORT=$(sed -n 's/^SERVER_PORT=//p' "$INSTALL_DIR/.env" | tail -1); PORT=${PORT:-3800}
+CERT=$(sed -n 's/^TLS_CERT_FILE=//p' "$INSTALL_DIR/.env" | tail -1); CERT=${CERT:-$INSTALL_DIR/data/cert.pem}
+HEALTH_ADDRESS=$BIND_ADDRESS
+case "$HEALTH_ADDRESS" in 0.0.0.0|::) HEALTH_ADDRESS=127.0.0.1;; esac
+case "$HEALTH_ADDRESS" in *:*) HEALTH_ADDRESS="[$HEALTH_ADDRESS]";; esac
+READY=0
+for attempt in $(seq 1 15); do
+    if curl --noproxy '*' --cacert "$CERT" --connect-timeout 2 --max-time 3 -fsS "https://$HEALTH_ADDRESS:$PORT/api/health" >/dev/null 2>&1; then READY=1; break; fi
+    sleep 1
+done
+if [ "$READY" != 1 ]; then echo '[HATA] HTTPS hazir olmadi.'; exit 1; fi
+STOPPED=0
+if [ -d /opt/gnnwatchtower-agent ]; then
+    install -m 600 "$CERT" /opt/gnnwatchtower-agent/server-cert.pem
+    systemctl start gnnwatchtower-agent 2>/dev/null || true
+fi
+PANEL_ADDRESS=$BIND_ADDRESS
+case "$PANEL_ADDRESS" in 0.0.0.0|::) PANEL_ADDRESS=$(hostname -I | awk '{print $1}');; esac
+printf '\nGuncellendi: %s\nPanel: https://%s:%s\nYedek: %s\n' "$APP_VERSION" "$PANEL_ADDRESS" "$PORT" "$BACKUP_DIR"
+echo 'Ajan komutlari: Ajan Ozeti > Ajan Dagitimi. Cevrimdisi veya imza anahtari eksik eski ajanlarda paneldeki kurulum komutunu yeniden calistirin.'
+if command -v openssl >/dev/null 2>&1; then openssl x509 -in "$CERT" -noout -fingerprint -sha256; fi

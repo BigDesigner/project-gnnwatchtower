@@ -1051,6 +1051,9 @@ func AgentHeartbeat(c *gin.Context) {
 
 // GetAgentSignerKey returns the appliance Ed25519 update signing public key
 func GetAgentSignerKey(c *gin.Context) {
+	if signedTLSBootstrap(c) {
+		return
+	}
 	pubKey := GetUpdatePublicKeyHex()
 	if pubKey == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Ajan imza anahtarı henüz başlatılmadı"})
@@ -1207,13 +1210,14 @@ func GenerateLinuxAgentScript(c *gin.Context) {
 
 	rawHost := c.Request.Host
 	cleanHost := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == ':' || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == ':' || r == '-' || r == '[' || r == ']' {
 			return r
 		}
 		return -1
 	}, rawHost)
-	if cleanHost == "" {
-		cleanHost = "127.0.0.1:3800"
+	if cleanHost == "" || cleanHost != rawHost {
+		c.JSON(400, gin.H{"error": "Geçersiz sunucu adresi"})
+		return
 	}
 	serverURL := fmt.Sprintf("%s://%s", scheme, cleanHost)
 
@@ -1255,20 +1259,31 @@ fi
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
+chmod 700 "$INSTALL_DIR"
+CERT_TMP=$(mktemp "$INSTALL_DIR/.trust-XXXXXX")
+trap 'rm -f "$CERT_TMP" "$BIN_TARGET.tmp"' EXIT
+printf '__WT_CERT_B64__' | base64 -d > "$CERT_TMP"
 
+
+echo "[GNNwatchtower] Ajan ikili dosyasi indiriliyor..."
+rm -f "$BIN_TARGET.tmp"
+if ! curl --cacert "$CERT_TMP" --proto '=https' --proto-redir '=https' -fsS "$SERVER_URL/api/agent/download/linux" -o "$BIN_TARGET.tmp"; then
+    echo "[HATA] Ajan dosyasi sunucudan indirilemedi! Lutfen sunucu erisimini kontrol ediniz."
+    exit 1
+fi
+
+echo '__WT_SHA__  '"$BIN_TARGET.tmp" | sha256sum -c -
+if [ -s "$INSTALL_DIR/signer.pub" ] && [ "$(tr -d '\r\n' < "$INSTALL_DIR/signer.pub")" != '__WT_SIGNER__' ]; then
+    echo "[HATA] Mevcut imza anahtari farkli; otomatik degistirilmedi."; exit 1
+fi
+install -m 600 "$CERT_TMP" "$INSTALL_DIR/server-cert.pem"
+printf '__WT_SIGNER__' > "$INSTALL_DIR/signer.pub"
+chmod 600 "$INSTALL_DIR/signer.pub"
 # Eski calisan ajani durdur
 if command -v systemctl >/dev/null 2>&1; then
     systemctl stop gnnwatchtower-agent.service 2>/dev/null || true
 fi
-pkill -9 -f gnnwatchtower-agent 2>/dev/null || true
 sleep 1
-
-echo "[GNNwatchtower] Ajan ikili dosyasi indiriliyor..."
-rm -f "$BIN_TARGET.tmp"
-if ! curl --proto '=https' --proto-redir '=https' -fsSL "$SERVER_URL/api/agent/download/linux" -o "$BIN_TARGET.tmp"; then
-    echo "[HATA] Ajan dosyasi sunucudan indirilemedi! Lutfen sunucu erisimini kontrol ediniz."
-    exit 1
-fi
 
 chmod 755 "$BIN_TARGET.tmp"
 mv -f "$BIN_TARGET.tmp" "$BIN_TARGET"
@@ -1280,8 +1295,7 @@ echo "[GNNwatchtower] Sistem servisi yapilandiriliyor ve baslatiliyor..."
 echo "[GNNwatchtower] Ajan basariyla kuruldu, otomatik olarak kaydoldu (Auto-Enrollment) ve aktif calisiyor!"
 `, serverURL, enrollFlag)
 
-	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.String(http.StatusOK, script)
+	completeAgentInstaller(c, script, "linux")
 }
 
 // GenerateWindowsAgentScript outputs enterprise powershell script for Windows Server
@@ -1294,13 +1308,14 @@ func GenerateWindowsAgentScript(c *gin.Context) {
 
 	rawHost := c.Request.Host
 	cleanHost := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == ':' || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == ':' || r == '-' || r == '[' || r == ']' {
 			return r
 		}
 		return -1
 	}, rawHost)
-	if cleanHost == "" {
-		cleanHost = "127.0.0.1:3800"
+	if cleanHost == "" || cleanHost != rawHost {
+		c.JSON(400, gin.H{"error": "Geçersiz sunucu adresi"})
+		return
 	}
 	serverURL := fmt.Sprintf("%s://%s", scheme, cleanHost)
 
@@ -1337,14 +1352,6 @@ $installDir = "C:\Program Files\GNNwatchtower-Agent"
 $agentExe = "$installDir\gnnwatchtower-agent.exe"
 $agentTmp = "$installDir\gnnwatchtower-agent.tmp"
 
-# Calisan eski ajani durdur
-try {
-    if (Test-Path $agentExe) {
-        & "$agentExe" -service stop 2>$null
-    }
-} catch {}
-Stop-Process -Name "gnnwatchtower-agent" -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
 
 if (!(Test-Path -Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
@@ -1352,7 +1359,37 @@ if (!(Test-Path -Path $installDir)) {
 
 Write-Host "[GNNwatchtower] Ajan ikili dosyasi indiriliyor..."
 try {
-    Invoke-WebRequest -Uri "$serverUrl/api/agent/download/windows" -OutFile $agentTmp -UseBasicParsing
+    if (-not ('WatchtowerPinnedDownload' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+public static class WatchtowerPinnedDownload {
+ public static void Download(string address, string destination, string fingerprint) {
+  var uri = new Uri(address);
+  if(uri.Scheme != "https") throw new Exception("HTTPS required");
+  var request = (HttpWebRequest)WebRequest.Create(uri);
+  request.AllowAutoRedirect = false; request.Proxy = null; request.Timeout = 15000; request.ReadWriteTimeout = 15000;
+  request.ServerCertificateValidationCallback = (sender, certificate, chain, errors) => {
+   if(certificate == null || (errors & (SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateNotAvailable)) != 0) return false;
+   using(var sha = SHA256.Create()) {
+    var hash = BitConverter.ToString(sha.ComputeHash(certificate.GetRawCertData())).Replace("-", "");
+    var cert = new X509Certificate2(certificate);
+    return String.Equals(hash, fingerprint, StringComparison.OrdinalIgnoreCase) && DateTime.UtcNow >= cert.NotBefore.ToUniversalTime() && DateTime.UtcNow <= cert.NotAfter.ToUniversalTime();
+   }
+  };
+  using(var response = (HttpWebResponse)request.GetResponse()) {
+   if(response.StatusCode != HttpStatusCode.OK) throw new Exception("Download failed");
+   using(var input = response.GetResponseStream()) using(var output = File.Create(destination)) input.CopyTo(output);
+  }
+ }
+}
+'@
+    }
+    [WatchtowerPinnedDownload]::Download("$serverUrl/api/agent/download/windows", $agentTmp, '__WT_CERT_FP__')
 } catch {
     Write-Host "[HATA] Windows Ajan ikili dosyasi indirilemedi! Lutfen sunucu erisimini kontrol ediniz." -ForegroundColor Red
     exit 1
@@ -1364,20 +1401,29 @@ if ((Get-Item $agentTmp).Length -lt 50000) {
     exit 1
 }
 
+if ((Get-FileHash -Path $agentTmp -Algorithm SHA256).Hash.ToLowerInvariant() -ne '__WT_SHA__') { throw 'Ajan dosyasi dogrulanamadi' }
+$signerPath = "$installDir\signer.pub"
+if ((Test-Path $signerPath) -and ((Get-Content $signerPath -Raw).Trim() -ne '__WT_SIGNER__')) { throw 'Mevcut imza anahtari farkli; otomatik degistirilmedi' }
+[IO.File]::WriteAllBytes("$installDir\server-cert.pem", [Convert]::FromBase64String('__WT_CERT_B64__'))
+[IO.File]::WriteAllText($signerPath, '__WT_SIGNER__')
+# Calisan eski ajani durdur
+try {
+    if (Test-Path $agentExe) {
+        & "$agentExe" -service stop 2>$null
+    }
+} catch {}
+Stop-Process -Name "gnnwatchtower-agent" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+
 Move-Item -Path $agentTmp -Destination $agentExe -Force
 
-Write-Host "[GNNwatchtower] Yerel Windows Hizmeti tescil ediliyor..."
-try {
+Write-Host "[GNNwatchtower] Windows hizmeti yapilandiriliyor..."
+if (-not (Get-Service -Name 'GNNwatchtowerAgent' -ErrorAction SilentlyContinue)) {
     & "$agentExe" -service install -server "$serverUrl"%s
-} catch {
-    Write-Host "[BILGI] Servis zaten kurulu veya tescil edildi, baslatiliyor..." -ForegroundColor Yellow
+    if ($LASTEXITCODE -ne 0) { throw 'Windows hizmeti kurulamadi' }
 }
-
-try {
-    & "$agentExe" -service start
-} catch {
-    Start-Service -Name "GNNwatchtowerAgent" -ErrorAction SilentlyContinue
-}
+& "$agentExe" -service start -server "$serverUrl"
+if ($LASTEXITCODE -ne 0) { throw 'Windows hizmeti baslatilamadi' }
 
 Write-Host "[GNNwatchtower] Windows Ajan basariyla kuruldu, otomatik olarak kaydoldu (Auto-Enrollment) ve baslatildi!" -ForegroundColor Green
 Write-Host ""
@@ -1385,8 +1431,7 @@ Write-Host "[BILGI] Hizmet durumunu izlemek ve ag/port erisimini test etmek icin
 Write-Host "        & '$agentExe' -diag" -ForegroundColor Yellow
 `, serverURL, enrollFlag)
 
-	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.String(http.StatusOK, ps1)
+	completeAgentInstaller(c, ps1, "windows")
 }
 
 // DownloadAgentBinary serves the agent binary

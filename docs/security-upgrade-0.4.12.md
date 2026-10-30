@@ -1,3 +1,5 @@
+> Bu belge önceki 0.4.12 sürümünün elle geçiş adımlarıdır. Güncel tek komut akışı için [0.4.13 belgesini](security-upgrade-0.4.13.md) kullanın.
+
 # 0.4.12 güvenlik geçişi
 
 Bu sürümde panel ve ajan trafiği HTTPS kullanır. HTTP kullanan mevcut kurulumlarda önce aşağıdaki geçiş tamamlanmalıdır; `update.sh` hazırlık yoksa çalışan servise dokunmadan durur.

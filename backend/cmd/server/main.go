@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"embed"
@@ -69,6 +70,9 @@ func ensureSelfSignedCert(certPath, keyPath string) error {
 		DNSNames:              []string{"localhost", "gnnwatchtower", "gnnwatchtower.local"},
 	}
 
+	if hostname, err := os.Hostname(); err == nil {
+		template.DNSNames = append(template.DNSNames, hostname)
+	}
 	if addrs, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok {
@@ -115,8 +119,16 @@ var embeddedDist embed.FS
 func main() {
 	// 1. Resolve configuration
 	resetAdmin := flag.String("reset-admin", "", "Admin kullanıcısının parolasını doğrudan konsoldan sıfırlar (Örn: -reset-admin 'YeniParolaniz')")
+	migration := flag.Bool("prepare-agent-migration", false, "Queue signed transition updates for existing active agents")
+	migrationDB := flag.String("migration-db", "/opt/gnnwatchtower/data/gnnwatchtower.db", "Existing migration database")
 	showVersion := flag.Bool("version", false, "Sunucu sürüm numarasını gösterir")
 	flag.Parse()
+	if *migration {
+		if err := prepareAgentMigration(*migrationDB); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	if *showVersion {
 		fmt.Printf("GNNwatchtower Server Appliance v%s (%s/%s)\n", version.Get(), runtime.GOOS, runtime.GOARCH)
@@ -177,7 +189,7 @@ func main() {
 
 	// 3. Initialize Ed25519 Update Signer
 	if err := api.InitUpdateSigner("./data"); err != nil {
-		log.Printf("[WARN] Failed initializing update signer: %v", err)
+		log.Fatalf("[FATAL] Failed initializing update signer: %v", err)
 	}
 
 	// 4. Start Polling Engine (Goroutine worker pool)
@@ -210,35 +222,36 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// 7. Start HTTP / HTTPS Server in background
-	tlsEnabled := true
+	// One port: authenticated APIs require TLS; legacy trust bootstrap contains no secrets.
 	certFile := os.Getenv("TLS_CERT_FILE")
-	keyFile := os.Getenv("TLS_KEY_FILE")
-
-	if tlsEnabled || certFile != "" || keyFile != "" {
-		if certFile == "" {
-			certFile = "./data/cert.pem"
-		}
-		if keyFile == "" {
-			keyFile = "./data/key.pem"
-		}
-		if err := ensureSelfSignedCert(certFile, keyFile); err != nil {
-			log.Fatalf("[FATAL] TLS certificate generation/load failed: %v", err)
-		}
-		go func() {
-			log.Printf("[GNNwatchtower Appliance] Secure Dashboard & API listening on https://0.0.0.0:%s", port)
-			if err := server.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("[FATAL] HTTPS Server failed: %v", err)
-			}
-		}()
-	} else {
-		go func() {
-			log.Printf("[GNNwatchtower Appliance] Dashboard & API listening on http://localhost:%s", port)
-			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("[FATAL] HTTP Server failed: %v", err)
-			}
-		}()
+	if certFile == "" {
+		certFile = "./data/cert.pem"
 	}
+	keyFile := os.Getenv("TLS_KEY_FILE")
+	if keyFile == "" {
+		keyFile = "./data/key.pem"
+	}
+	if err := ensureSelfSignedCert(certFile, keyFile); err != nil {
+		log.Fatal(err)
+	}
+	if err := api.ConfigureTLSCertificate(certFile); err != nil {
+		log.Fatal(err)
+	}
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tlsListener := newProtocolListener(listener, &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
+	go func() {
+		log.Printf("[Server] HTTPS listening on %s", server.Addr)
+		if err := server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
 
 	// 8. Graceful Shutdown listener
 	quit := make(chan os.Signal, 1)
