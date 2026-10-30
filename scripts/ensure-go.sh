@@ -3,6 +3,14 @@
 # Obtain the current stable compiler using official TLS metadata and its SHA-256.
 set -euo pipefail
 TOOLCHAIN_DIR=$1
+# This helper is sourced from the freshly cloned release, even by a cached entry script.
+if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    echo "Windows kaynak derleyicisi icin eksik MinGW GCC kuruluyor."
+    apt-get update -qq
+    apt-get install -y -qq gcc-mingw-w64-x86-64
+    hash -r
+    command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 || { echo "[HATA] MinGW GCC kurulumu dogrulanamadi."; return 1; }
+fi
 if command -v go >/dev/null 2>&1; then
     GO_MINOR=$(go version | sed -n 's/.*go1\.\([0-9]*\).*/\1/p')
     if [ -n "$GO_MINOR" ] && [ "$GO_MINOR" -ge 22 ]; then return 0; fi
